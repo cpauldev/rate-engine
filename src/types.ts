@@ -37,9 +37,23 @@ export type RateLimitSnapshot<TBucketId extends string = string> = {
 };
 
 /**
- * The final decision object returned by rate limiting evaluations.
+ * Metadata explaining the components of an effective composite rate limit decision.
  */
-export type RateLimitDecision<
+export type EffectiveQuotaMeta<TBucketId extends string = string> = {
+  /** Indicates if the final decision metrics are a composite of multiple stages. */
+  composite: boolean;
+  /** The bucket ID that determined the limit. */
+  limitSourceBucketId: TBucketId;
+  /** The bucket ID that determined the remaining count. */
+  remainingSourceBucketId: TBucketId;
+  /** The bucket ID that determined the reset cooldown timer. */
+  resetSourceBucketId: TBucketId;
+};
+
+/**
+ * A snapshot representing a single rate limit check outcome.
+ */
+export type RateLimitStageDecision<
   TPolicyId extends string = string,
   TBucketId extends string = string,
 > = RateLimitSnapshot<TBucketId> & {
@@ -51,6 +65,19 @@ export type RateLimitDecision<
   tier: RateLimitTier;
   /** Custom user-facing message associated with the block. */
   message?: string;
+};
+
+/**
+ * The final decision object returned by rate limiting evaluations.
+ */
+export type RateLimitDecision<
+  TPolicyId extends string = string,
+  TBucketId extends string = string,
+> = RateLimitStageDecision<TPolicyId, TBucketId> & {
+  /** Snapshots of individual stages evaluated in a multi-stage check. */
+  stages?: RateLimitStageDecision<TPolicyId, TBucketId>[];
+  /** Metadata explaining composite quota metrics, if applicable. */
+  effective?: EffectiveQuotaMeta<TBucketId>;
 };
 
 /**
@@ -137,4 +164,78 @@ export type RateEngineContext = {
   userAgent?: string;
   country?: string;
   [key: string]: unknown;
+};
+
+/**
+ * Options passed to manual bucket consumption calls.
+ */
+export type ConsumeBucketOptions<TPolicyId extends string> = {
+  /** Optional custom token cost to consume for this request. Defaults to 1. */
+  rate?: number;
+  /** Metadata parameters passed to Upstash analytics uploads. */
+  context?: {
+    ip?: string;
+    userAgent?: string;
+    country?: string;
+  };
+  /** The evaluation tier categorization level. Defaults to "single". */
+  tier?: RateLimitTier;
+  /** The ID of the policy triggering this bucket consume, if applicable. */
+  policyId?: TPolicyId;
+  /** Override error message if this consume blocks. */
+  message?: string;
+  /** Defines whether direct consumption should allow (fail-open) or block (fail-closed) on Redis connection error. Defaults to "open". */
+  failureMode?: "open" | "closed";
+};
+
+/**
+ * Options passed to policy enforcement calls.
+ */
+export type EnforceOptions = {
+  /** Wait-until context method used to keep background analytics upload promises alive in serverless/edge environments. */
+  waitUntil?: (promise: Promise<unknown>) => void;
+};
+
+/**
+ * Options to instantiate a RateEngine instance.
+ */
+export type RateEngineOptions<
+  TPolicyId extends string,
+  TBucketId extends string,
+  TContext extends RateEngineContext,
+> = {
+  /** A duck-typed Redis client instance. Compatible with @upstash/redis or ioredis. */
+  redis: RateEngineRedisClient;
+  /** Configuration defining the limits and window durations for all buckets. */
+  buckets: Record<TBucketId, BucketConfig>;
+  /** Configuration mapping policy IDs to their cascaded checking stages. */
+  policies: Record<
+    TPolicyId,
+    | Omit<RateLimitPolicy<TBucketId, TContext>, "failureMode">
+    | RateLimitPolicy<TBucketId, TContext>
+  >;
+  /** A set of policy IDs that must fail-closed (block the request) if the Redis backend is degraded. */
+  closedFailurePolicies?: TPolicyId[] | Set<TPolicyId>;
+  /** Logging interface to report background metrics errors or health pings. Defaults to no-op. */
+  logger?: RateEngineLogger;
+  /** Redis execution timeout in milliseconds. Defaults to 1000ms. */
+  redisTimeoutMs?: number;
+  /** Fake reset delay in ms applied to fallback snapshots if Redis goes offline. Defaults to 60000ms. */
+  fallbackResetMs?: number;
+  /** Enables @upstash/ratelimit analytics uploads. Defaults to true. */
+  analytics?: boolean;
+  /** A prefix mapping overrides. Useful for matching legacy redis namespaces (e.g. { "auth": "legacy:auth" }). */
+  bucketPrefixOverrides?: Partial<Record<TBucketId, string>>;
+  /** Dynamic policy hook to swap out policies at runtime (e.g., swapping to strict checkout limits). */
+  resolvePolicy?: (
+    policyId: TPolicyId,
+    context: TContext,
+  ) => Promise<TPolicyId> | TPolicyId;
+  /** Shared cache Map to cache tokens locally and bypass Redis connection overhead. */
+  ephemeralCache?: Map<string, number>;
+  /** Telemetry callback invoked when a rate limit is violated or if a fail-closed policy fails during degradation. */
+  onViolation?: (
+    context: TContext,
+    decision: RateLimitDecision<TPolicyId, TBucketId>,
+  ) => Promise<void> | void;
 };

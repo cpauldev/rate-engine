@@ -1,15 +1,15 @@
+export { RateEngine } from "./engine";
+
 export {
-  RateEngine,
   type RateEngineOptions,
   type ConsumeBucketOptions,
   type EnforceOptions,
-} from "./engine";
-
-export {
   type RateLimitFailureReason,
   type RateLimitTier,
   type RateLimitSnapshot,
+  type RateLimitStageDecision,
   type RateLimitDecision,
+  type EffectiveQuotaMeta,
   type RateEngineRedisClient,
   type RateEngineLogger,
   type BucketConfig,

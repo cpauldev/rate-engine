@@ -1,9 +1,9 @@
 {
   "name": "rate-engine",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "author": "Christian Paul (https://github.com/cpauldev)",
-  "description": "RateEngine is a client-agnostic, multi-stage rate limiting engine for TypeScript, powered by `@upstash/ratelimit`. Designed for tiered pipelines (Global to Endpoint-level) with fail-open/fail-closed safety, supporting any Redis-compatible backend.",
+  "description": "RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.",
   "keywords": [
     "ratelimit",
     "rate-limiter",
@@ -37,6 +37,7 @@
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "publishConfig": {
@@ -52,7 +53,10 @@
   "homepage": "https://github.com/cpauldev/rate-engine#readme",
   "scripts": {
     "build": "tsc",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "bun test src/__tests__",
+    "test:smoke": "bun -e \"const mod = await import('./dist/index.js'); for (const key of ['RateEngine','getRateLimitHeaders','toRateLimitResponse','toOAuthSlowDownResponse']) { if (typeof mod[key] !== 'function') throw new Error('Missing export: ' + key); }\"",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8"
@@ -62,6 +66,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "bun-types": "^1.3.14",
     "typescript": "^6.0.3"
   },
   "private": false

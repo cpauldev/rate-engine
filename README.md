@@ -2,48 +2,38 @@
 
 # RateEngine: Rate Limiting Engine for TypeScript
 
-![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square)
+![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.2.0-blue?style=flat-square)](./CHANGELOG.md)
 
-RateEngine is a client-agnostic, multi-stage rate limiting engine for TypeScript, powered by `@upstash/ratelimit`. Designed for tiered pipelines (Global to Endpoint-level) with fail-open/fail-closed safety, supporting any Redis-compatible backend.
+RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.
+
+It is designed for developers using **Redis or Valkey** through providers like Upstash, ElastiCache, Redis Cloud, DragonflyDB, KeyDB, or similar infrastructure who want cleaner, config-driven rate-limiting logic. It is especially useful for **serverless, edge, and Node.js APIs** where in-memory limiters do not scale reliably across cold starts, regions, or multiple runtime instances. Use it when you need **hierarchical limits** such as global IP, user-account, and endpoint-specific checks; explicit **fail-open or fail-closed behavior** during Redis degradation; and built-in helpers for standard rate-limit headers and `429` responses.
 
 #### 🤖 Ask your coding assistant
 
-> "Audit my codebase to see if adding the `rate-engine` package on npm is beneficial. If so, explain why and draft an integration plan (identifying endpoints to protect, bucket configurations, and fail-open vs. fail-closed routes) following the package's README guide and source code."
+> "Audit my codebase to see if adding the `rate-engine` package on npm is beneficial. If so, explain why and draft an integration plan identifying endpoints to protect, bucket configurations, and fail-open vs. fail-closed routes using the package README and source code."
 
 ---
 
-## Features (vs. Raw `@upstash/ratelimit`)
+## Why use RateEngine?
 
-While RateEngine uses `@upstash/ratelimit` under the hood to execute rate limit checks (supporting sliding window, fixed window, or token bucket), it acts as a structured wrapper that eliminates low-level middleware boilerplate:
+RateEngine uses `@upstash/ratelimit` under the hood to execute rate-limit checks using sliding window, fixed window, or token bucket algorithms. It adds a structured policy layer around those checks so application code can stay focused on request handling instead of repeated rate-limit orchestration.
 
-| Feature                  | Raw `@upstash/ratelimit`                                                                                                                   | With **RateEngine**                                                                                                                |
-| :----------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------- |
-| **Chained Checks**       | Requires writing manual nested conditional statements in your handlers to enforce multiple layers of limits.                               | 🔗 **Automatic.** Sequentially evaluates a declared multi-stage pipeline (`Global ➔ Endpoint`) in a single call.                   |
-| **Fail-Safe Modes**      | Throws an error on timeout/failure. Standard fail-open or fail-closed behaviors must be implemented manually per route.                    | ⚙️ **Configurable.** Define declarative fail-open vs. fail-closed (block request) policies directly in the config.                 |
-| **Serverless Lifecycle** | Developer must catch and process the background analytics promise (`result.pending`) to prevent early serverless execution halts.          | ⚡ **Handled.** Propagates the background analytics promise directly to your environment's `waitUntil` lifecycle method.           |
-| **HTTP Responses**       | Returns raw metrics (`limit`, `remaining`, `reset`). Formatting standard headers and 429 JSON responses must be coded manually.            | 🌐 **Built-in.** Exposes standard Web API-compliant `toRateLimitResponse()` and `getRateLimitHeaders()` helpers.                   |
-| **Dynamic Routing**      | Requires manual conditional logic before instantiation to select different rate-limiting thresholds at runtime.                            | 🔄 **Built-in Hook.** Exposes a `resolvePolicy` hook to dynamically redirect requests to stricter rules based on state.            |
-| **Client Flexibility**   | Strictly typed to `@upstash/redis`. Integrating TCP clients (like `ioredis`) for local development requires custom wrappers.               | 🧩 **Duck-Typed.** Accepts any Redis client that implements `eval`, `evalsha`, `incr`, `expire`, and `ping` (TCP or HTTP).         |
-| **Violation Tracking**   | Requires manual telemetry calls inside every blocked path to track rate limit violations.                                                  | 🛡️ **Built-in Hook.** Exposes an `onViolation` lifecycle callback to centralize telemetry, logging, or blocking of abusive actors. |
-| **Memory Optimization**  | Each `Ratelimit` instance creates its own in-memory cache map unless a shared Map is manually instantiated and passed to all constructors. | 🧠 **Shared Cache.** Shares a single in-memory Map cache across all bucket limiters by default.                                    |
-
----
-
-## Who is it for?
-
-**RateEngine** is built for developers who:
-
-- 🛠️ **Use Redis** (via Upstash or any TCP client) and want to write clean, structured rate-limiting logic without managing raw connection and setup boilerplate.
-- ⚡ **Build Serverless or Edge APIs** (Next.js, Cloudflare Workers, AWS Lambda) where traditional in-memory limiters reset on every cold start or server scale event.
-- 🔗 **Need Hierarchical/Tiered Limits** (e.g., checking a global limit, then an IP limit, then an endpoint limit) and want to avoid writing nested, complex `if/else` checks for each rate limit stage.
-- 🛡️ **Value API Resilience** and want to automatically allow (fail-open) or block (fail-closed) requests if the Redis database goes down or times out.
-- 🌐 **Want Zero Boilerplate** for generating standard HTTP rate-limit headers and JSON error responses.
+| Feature                  | Raw `@upstash/ratelimit`                                                                 | With **RateEngine**                                                                                                  |
+| :----------------------- | :--------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------- |
+| **Chained Checks**       | Requires manually coordinating multiple limiter calls in route handlers.                 | 🔗 **Policy Pipelines.** Sequentially evaluates declared multi-stage policies, such as `Global ➔ User ➔ Endpoint`.   |
+| **Fail-Safe Modes**      | Requires route-level error handling and custom fallback behavior.                        | ⚙️ **Configurable.** Define fail-open or fail-closed behavior at the policy level, or per direct bucket call.        |
+| **Serverless Lifecycle** | Requires handling `result.pending` when the runtime needs background work to stay alive. | ⚡ **Handled.** Passes background analytics promises to your environment's `waitUntil` hook when provided.           |
+| **HTTP Responses**       | Returns raw metrics such as `limit`, `remaining`, and `reset`.                           | 🌐 **Built-in Helpers.** Generates rate-limit headers and standard `429` JSON responses.                             |
+| **Dynamic Routing**      | Requires custom route logic to switch between different limiter policies at runtime.     | 🔄 **Resolver Hook.** Use `resolvePolicy` to redirect requests to stricter or alternative policies based on context. |
+| **Client Flexibility**   | Common usage is tied to `@upstash/redis`; TCP clients require adapter logic.             | 🧩 **Duck-Typed Redis Client.** Accepts clients exposing the Redis command methods RateEngine needs.                 |
+| **Violation Tracking**   | Requires adding telemetry calls in each blocked path.                                    | 🛡️ **Violation Hook.** Centralize logging, telemetry, or abuse tracking through `onViolation`.                       |
+| **Memory Optimization**  | Each `Ratelimit` instance may use its own cache unless a shared map is passed manually.  | 🧠 **Shared Cache.** Shares one in-memory cache map across bucket limiters by default.                               |
 
 ---
 
 ## Installation
 
-Install **RateEngine** via your preferred package manager:
+Install RateEngine via your preferred package manager:
 
 ```bash
 # npm
@@ -61,88 +51,35 @@ bun add rate-engine
 
 ---
 
-## Redis Client Compatibility
-
-**RateEngine** is client-agnostic. It does not enforce a strict instance type of `@upstash/redis`, but instead relies on **duck-typing** the Redis command signatures.
-
-This makes it extremely easy to switch between environments:
-
-- **Production (Serverless/Edge):** Connect via HTTP REST using `@upstash/redis`.
-- **Development / Local (Docker/TCP):** Connect via TCP using `ioredis` or standard `redis` clients, or run a local **DragonflyDB** instance.
-
-As long as the client you pass to the constructor exposes `eval`, `evalsha`, `incr`, `expire`, and `ping` methods, RateEngine will work seamlessly.
-
-### Example: Environment-Aware Redis Proxy
-
-Here is a simple example showing how you can write a proxy to seamlessly route traffic between `ioredis` (for local dev/DragonflyDB) and `@upstash/redis` (for production) based on an environment variable:
-
-```typescript
-import { Redis as UpstashRedis } from "@upstash/redis";
-import IORedis from "ioredis";
-
-const isProduction = process.env.NODE_ENV === "production";
-
-// Lazily initialize clients to prevent connection issues at build-time
-let client: UpstashRedis | IORedis | null = null;
-function getRedisClient() {
-  if (client) return client;
-
-  if (isProduction) {
-    client = new UpstashRedis({
-      url: process.env.UPSTASH_REDIS_REST_URL!,
-      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-    });
-  } else {
-    client = new IORedis(process.env.REDIS_URL || "redis://localhost:6379");
-  }
-  return client;
-}
-
-// A unified, duck-typed Redis interface compatible with RateEngine
-export const redis = new Proxy({} as any, {
-  get(_target, prop) {
-    const activeClient = getRedisClient();
-
-    // Normalizing the difference in eval/evalsha signature between Upstash (REST) and IORedis (TCP)
-    if (prop === "eval" || prop === "evalsha") {
-      return async (script: string, keys: string[], args: any[] = []) => {
-        if (!isProduction) {
-          // IORedis: client.eval(script, numKeys, ...keys, ...args)
-          return await (activeClient as IORedis)[prop](
-            script,
-            keys.length,
-            ...keys,
-            ...args,
-          );
-        }
-        // Upstash: client.eval(script, keys[], args[])
-        return await (activeClient as UpstashRedis)[prop](script, keys, args);
-      };
-    }
-
-    const value = (activeClient as any)[prop];
-    return typeof value === "function" ? value.bind(activeClient) : value;
-  },
-});
-```
-
----
-
 ## Getting Started
 
-### 1. Define Custom Buckets & Policies
+### 1. Define buckets
 
-First, create a `buckets.ts` file to define your rate limit windows and capacities:
+Create a `buckets.ts` file to define your rate-limit windows and capacities:
 
 ```typescript
 // buckets.ts
 import { type BucketConfig } from "rate-engine";
 
 export const APP_BUCKETS = {
-  "global:ip": { requests: 500, window: "1 m" }, // Defaults to slidingWindow
-  "global:user": { requests: 300, window: "1 m", algorithm: "slidingWindow" },
-  "auth:login": { requests: 5, window: "15 m", algorithm: "fixedWindow" },
-  "api:default": { requests: 100, window: "1 m" },
+  "global:ip": {
+    requests: 500,
+    window: "1 m",
+  },
+  "global:user": {
+    requests: 300,
+    window: "1 m",
+    algorithm: "slidingWindow",
+  },
+  "auth:login": {
+    requests: 5,
+    window: "15 m",
+    algorithm: "fixedWindow",
+  },
+  "api:default": {
+    requests: 100,
+    window: "1 m",
+  },
   "api:burst": {
     requests: 50,
     window: "10 s",
@@ -154,7 +91,9 @@ export const APP_BUCKETS = {
 export type AppBucketId = keyof typeof APP_BUCKETS;
 ```
 
-Next, create a `policies.ts` file to define your multi-stage checking pipelines:
+### 2. Define policies
+
+Create a `policies.ts` file to define your multi-stage checking pipelines:
 
 ```typescript
 // policies.ts
@@ -170,7 +109,8 @@ export type AppContext = {
 
 export const APP_POLICIES = {
   "auth.login": {
-    failureMode: "closed", // Critical endpoint: fails CLOSED if Redis goes down
+    // Critical endpoint: fail closed if Redis is degraded.
+    failureMode: "closed",
     stages: [
       {
         bucketId: "global:ip",
@@ -187,7 +127,8 @@ export const APP_POLICIES = {
     ],
   },
   "api.read": {
-    failureMode: "open", // Less critical: fails OPEN to prevent site outages
+    // Lower-risk endpoint: fail open to avoid unnecessary site outages.
+    failureMode: "open",
     stages: [
       {
         bucketId: "api:default",
@@ -201,7 +142,7 @@ export const APP_POLICIES = {
 export type AppPolicyId = keyof typeof APP_POLICIES;
 ```
 
-### 2. Instantiate RateEngine
+### 3. Instantiate RateEngine
 
 Create a `rate-engine.ts` file to initialize the RateEngine instance:
 
@@ -214,31 +155,37 @@ import { APP_BUCKETS, type AppBucketId } from "./buckets";
 import { APP_POLICIES, type AppContext, type AppPolicyId } from "./policies";
 
 export const rateEngine = new RateEngine<AppPolicyId, AppBucketId, AppContext>({
-  redis: new Redis({ url: "...", token: "..." }), // Any Upstash-compatible Redis client
+  redis: new Redis({
+    url: process.env.UPSTASH_REDIS_REST_URL!,
+    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+  }),
   logger: console,
   buckets: APP_BUCKETS,
   policies: APP_POLICIES,
 
-  // Custom Dynamic policy resolution (e.g. progressive throttling)
+  // Optional dynamic policy resolution.
   resolvePolicy: async (policyId, context) => {
-    // Dynamically downgrade or override policy rules based on context
+    // Example: return a stricter policy for suspicious users.
     return policyId;
   },
 
-  // Event handler triggered when any rate limit stage is breached
+  // Optional central violation hook.
   onViolation: async (context, decision) => {
     console.warn(
-      `[Violation] ${context.ipAddress} exceeded ${decision.bucketId}`,
+      `[RateEngine] ${context.ipAddress ?? "unknown"} exceeded ${decision.bucketId}`,
+      {
+        policyId: decision.policyId,
+        tier: decision.tier,
+        degraded: decision.degraded,
+      },
     );
   },
 });
 ```
 
-### 3. Enforce Rate Limits in API Handlers
+### 4. Enforce limits in an API handler
 
-Enforce limits directly inside your API routes. You can use RateEngine's built-in framework-agnostic **HTTP Utilities** (`toRateLimitResponse` and `getRateLimitHeaders`) to automatically format RFC-compliant rate limit responses and headers.
-
-If using a serverless platform (like Vercel Edge functions), supply the `waitUntil` parameter to guarantee that Upstash metrics uploads complete properly in the background:
+Use `enforce()` inside your route handler. For serverless or edge runtimes, pass `waitUntil` so background analytics work can be completed by the platform.
 
 ```typescript
 // Next.js Route Handler Example
@@ -249,146 +196,469 @@ import { getRateLimitHeaders, toRateLimitResponse } from "rate-engine";
 import { rateEngine } from "@/lib/rate-engine";
 
 export async function POST(req: NextRequest, event: { waitUntil: any }) {
-  const ip = req.headers.get("x-forwarded-for") ?? "127.0.0.1";
+  const ipAddress =
+    req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "127.0.0.1";
 
   const decision = await rateEngine.enforce(
     "auth.login",
     {
-      ipAddress: ip,
+      ipAddress,
       userId: "user_123",
+      userAgent: req.headers.get("user-agent") ?? undefined,
     },
     {
-      // Resolves background metrics promises using serverless hook
-      waitUntil: (p) => event.waitUntil(p),
+      waitUntil: (promise) => event.waitUntil(promise),
     },
   );
 
-  // 1. If rate limited, return the Web Response directly:
   if (!decision.allowed) {
     return toRateLimitResponse(decision, {
-      message: "Custom login error message", // Optional override
-      errorCode: "LOGIN_LIMIT_EXCEEDED", // Optional custom error code
+      message: "Too many login attempts. Please try again later.",
+      errorCode: "LOGIN_LIMIT_EXCEEDED",
     });
   }
 
-  // 2. If allowed, you can append rate limit headers to successful responses:
   const headers = getRateLimitHeaders(decision);
 
-  // Proceed with authentication...
+  // Continue with authentication...
   return NextResponse.json({ success: true }, { headers });
 }
 ```
 
 ---
 
-## API Reference
+## Core Concepts
 
-### `RateEngine` Constructor Options
+### Buckets
 
-The `RateEngine` class is initialized with an options object:
+A **bucket** defines a rate-limit capacity, window, and algorithm.
 
-| Parameter               | Type                                                     | Required | Default      | Description                                                                                                              |
-| :---------------------- | :------------------------------------------------------- | :------- | :----------- | :----------------------------------------------------------------------------------------------------------------------- |
-| `redis`                 | `RateEngineRedisClient`                                  | Yes      | -            | A duck-typed Redis client instance (e.g., `@upstash/redis` or `ioredis`).                                                |
-| `buckets`               | `Record<TBucketId, BucketConfig>`                        | Yes      | -            | Configuration of all available rate limit buckets.                                                                       |
-| `policies`              | `Record<TPolicyId, RateLimitPolicy>`                     | Yes      | -            | Rules specifying chained evaluation stages.                                                                              |
-| `closedFailurePolicies` | `TPolicyId[] \| Set<TPolicyId>`                          | No       | `Set()`      | Policies that should fail closed (block request) if Redis is degraded.                                                   |
-| `logger`                | `RateEngineLogger`                                       | No       | -            | Log utility (e.g., `console` or custom server logger) to track rate limit errors.                                        |
-| `redisTimeoutMs`        | `number`                                                 | No       | `1000`       | Redis response timeout in milliseconds before triggering fallbacks.                                                      |
-| `fallbackResetMs`       | `number`                                                 | No       | `60000`      | Cooldown/reset duration applied in fallback snapshots when Redis is offline.                                             |
-| `bucketPrefixOverrides` | `Partial<Record<TBucketId, string>>`                     | No       | -            | Custom prefix strings mapping to override standard prefix naming rules on a per-bucket basis.                            |
-| `resolvePolicy`         | `(policyId, context) => Promise<TPolicyId> \| TPolicyId` | No       | -            | Dynamic resolver hook to redirect requests to alternative policies (e.g. progressive throttling).                        |
-| `ephemeralCache`        | `Map<string, number>`                                    | No       | Shared `Map` | An in-memory Map to store local rate limit counts. Set to a custom Map or bypass if you want to customize local caching. |
-| `onViolation`           | `(context, decision) => Promise<void> \| void`           | No       | -            | Callback triggered whenever a rate limit is breached or a fail-closed policy fails due to degradation.                   |
+```typescript
+{
+  requests: 100,
+  window: "1 m",
+  algorithm: "slidingWindow"
+}
+```
+
+Supported algorithms:
+
+- `slidingWindow`
+- `fixedWindow`
+- `tokenBucket`
+
+For token buckets, you can also provide `refillRate`.
+
+### Policies
+
+A **policy** is an ordered list of stages. Each stage chooses a bucket and resolves the identifier to rate limit.
+
+```typescript
+{
+  failureMode: "closed",
+  stages: [
+    {
+      bucketId: "global:ip",
+      identifier: (ctx) => ctx.ipAddress,
+      tier: "global",
+    },
+    {
+      bucketId: "auth:login",
+      identifier: (ctx) => ctx.userId ?? ctx.ipAddress,
+      tier: "endpoint",
+    },
+  ],
+}
+```
+
+Policies are evaluated sequentially and stop at the first blocked stage.
+
+### Failure modes
+
+RateEngine supports two fallback modes when Redis is unavailable or a rate-limit operation fails:
+
+| Mode     | Behavior                                       | Common use                                                                   |
+| :------- | :--------------------------------------------- | :--------------------------------------------------------------------------- |
+| `open`   | Allows the request during backend degradation. | Public reads, low-risk APIs, availability-first routes.                      |
+| `closed` | Blocks the request during backend degradation. | Login, password reset, checkout, OTP, write-heavy or abuse-sensitive routes. |
+
+`enforce()` uses the policy failure mode. Direct `consumeBucket()` calls default to fail open unless you pass `failureMode: "closed"`.
+
+### Effective quota reporting
+
+For multi-stage policies, RateEngine returns a conservative root-level decision optimized for HTTP headers.
+
+If all stages pass:
+
+- `remaining` comes from the evaluated stage with the lowest remaining count.
+- `limit` comes from that same lowest-remaining stage.
+- `reset` comes from the stage with the latest reset timestamp.
+- `stages` contains the per-stage decisions.
+- `effective` identifies which buckets contributed the root-level `limit`, `remaining`, and `reset` values.
+
+This means root `limit`, `remaining`, and `reset` fields can be a composite of multiple stages. They are intended for conservative client-facing headers, not as a replacement for exact per-bucket state. Use `decision.stages` when you need exact per-stage quota state.
+
+### Sequential execution
+
+RateEngine evaluates policy stages sequentially and short-circuits on the first violation. This avoids downstream token consumption when an earlier stage already blocks the request.
+
+For example, if a request is already blocked by a global IP limit, RateEngine will not also consume from the endpoint-specific bucket.
+
+> [!TIP]
+> Each additional stage may add one Redis rate-limit operation. Keep latency-sensitive policies concise, and reserve longer pipelines for routes where the added precision is worth the extra round trips.
 
 ---
 
-### Instance Methods
+## Redis Client Compatibility
+
+RateEngine is client-agnostic. It does not require a strict `@upstash/redis` instance; instead, it uses a duck-typed Redis client interface.
+
+RateEngine is designed to work with Redis-compatible clients that expose the command methods required by `@upstash/ratelimit`, including:
+
+- `eval`
+- `evalsha`
+- `incr`
+- `expire`
+- `ping`
+
+It has been designed for use with:
+
+- ☁️ **Cloud/enterprise managed Redis:** AWS ElastiCache, Redis Cloud, Google Memorystore, and Azure Managed Redis through TCP clients such as `ioredis` or `redis`.
+- ⚡ **Serverless/edge Redis:** Upstash Redis through HTTP REST using `@upstash/redis`.
+- 🚀 **Redis-compatible engines:** DragonflyDB, KeyDB, and Valkey.
+
+Provider-specific behavior should be verified in your deployment environment.
+
+> [!NOTE]
+> **Flipped environments:** The usual local-vs-production setup can be reversed. If you self-host staging/production with DragonflyDB, Valkey, or ElastiCache and use Upstash for local development tunnels, prefer an explicit variable such as `REDIS_PROVIDER=upstash|dragonfly|valkey` instead of relying only on `NODE_ENV`.
+
+### Advanced: Environment-aware Redis proxy
+
+The following proxy normalizes `eval` and `evalsha` calls between `ioredis` and `@upstash/redis`.
+
+```typescript
+import { Redis as UpstashRedis } from "@upstash/redis";
+import IORedis from "ioredis";
+
+const provider = process.env.REDIS_PROVIDER ?? "upstash";
+
+let client: UpstashRedis | IORedis | null = null;
+
+function getRedisClient() {
+  if (client) return client;
+
+  if (provider === "tcp") {
+    client = new IORedis(process.env.REDIS_URL ?? "redis://localhost:6379");
+  } else {
+    client = new UpstashRedis({
+      url: process.env.UPSTASH_REDIS_REST_URL!,
+      token: process.env.UPSTASH_REDIS_REST_TOKEN!,
+    });
+  }
+
+  return client;
+}
+
+export const redis = new Proxy({} as any, {
+  get(_target, prop) {
+    const activeClient = getRedisClient();
+
+    if (prop === "eval" || prop === "evalsha") {
+      return async (scriptOrSha: string, keys: string[], args: any[] = []) => {
+        if (provider === "tcp") {
+          return await (activeClient as IORedis)[prop](
+            scriptOrSha,
+            keys.length,
+            ...keys,
+            ...args,
+          );
+        }
+
+        return await (activeClient as UpstashRedis)[prop](
+          scriptOrSha,
+          keys,
+          args,
+        );
+      };
+    }
+
+    const value = (activeClient as any)[prop];
+    return typeof value === "function" ? value.bind(activeClient) : value;
+  },
+});
+```
+
+---
+
+## API Reference
+
+### `RateEngine` constructor
+
+The `RateEngine` class is initialized with an options object.
+
+| Parameter               | Type                                                     | Required | Default      | Description                                                                                                                        |
+| :---------------------- | :------------------------------------------------------- | :------- | :----------- | :--------------------------------------------------------------------------------------------------------------------------------- |
+| `redis`                 | `RateEngineRedisClient`                                  | Yes      | -            | A duck-typed Redis client instance.                                                                                                |
+| `buckets`               | `Record<TBucketId, BucketConfig>`                        | Yes      | -            | Configuration for all available rate-limit buckets.                                                                                |
+| `policies`              | `Record<TPolicyId, RateLimitPolicy>`                     | Yes      | -            | Named policies specifying ordered evaluation stages.                                                                               |
+| `closedFailurePolicies` | `TPolicyId[] \| Set<TPolicyId>`                          | No       | `Set()`      | Backward-compatible way to mark policies as fail closed when `failureMode` is omitted.                                             |
+| `logger`                | `RateEngineLogger`                                       | No       | -            | Logger interface for rate-limit errors and background analytics failures.                                                          |
+| `redisTimeoutMs`        | `number`                                                 | No       | `1000`       | Redis response timeout before fallback behavior is triggered.                                                                      |
+| `fallbackResetMs`       | `number`                                                 | No       | `60000`      | Reset duration used in degraded fallback snapshots.                                                                                |
+| `analytics`             | `boolean`                                                | No       | `true`       | Enables `@upstash/ratelimit` analytics uploads. Set to `false` to opt out; local health counters are never uploaded by RateEngine. |
+| `bucketPrefixOverrides` | `Partial<Record<TBucketId, string>>`                     | No       | -            | Optional per-bucket Redis key prefix overrides.                                                                                    |
+| `resolvePolicy`         | `(policyId, context) => Promise<TPolicyId> \| TPolicyId` | No       | -            | Hook for dynamically redirecting a request to another policy.                                                                      |
+| `ephemeralCache`        | `Map<string, number>`                                    | No       | Shared `Map` | Optional custom shared cache map.                                                                                                  |
+| `onViolation`           | `(context, decision) => Promise<void> \| void`           | No       | -            | Callback triggered when a rate limit is breached or a fail-closed policy blocks due to degradation.                                |
+
+---
+
+### Instance methods
 
 #### 1. `enforce(policyId, context, options?)`
 
-Sequentially evaluates the stages of a rate limit policy.
+Sequentially evaluates the stages of a named policy.
 
-- **Arguments**:
-  - `policyId` (`TPolicyId`): The ID of the policy to enforce.
-  - `context` (`TContext`): Execution context representing the actor (IP, user agent, etc.).
-  - `options` (`EnforceOptions`): Optional parameters like `{ waitUntil: (p) => void }` for serverless environments.
-- **Returns**: `Promise<RateLimitDecision>`
+```typescript
+const decision = await rateEngine.enforce("auth.login", {
+  ipAddress: "203.0.113.10",
+  userId: "user_123",
+});
+```
 
-#### 2. `consumeBucket(bucketId, identifier, options?, enforceOptions?)`
+- **Arguments**
+  - `policyId` (`TPolicyId`): The policy ID to enforce.
+  - `context` (`TContext`): Request context used by stage identifier functions.
+  - `options` (`EnforceOptions`): Optional hooks such as `{ waitUntil: (promise) => void }`.
 
-Consumes a token from a single bucket (bypassing multi-stage pipelines).
+- **Returns**
+  - `Promise<RateLimitDecision>`
 
-- **Arguments**:
-  - `bucketId` (`TBucketId`): The target bucket ID.
-  - `identifier` (`string`): Unique identifier (e.g., IP address or user ID).
-  - `options` (`ConsumeBucketOptions`): Options like `{ rate: number, context: { ip, userAgent, country }, tier: RateLimitTier }`.
-- **Returns**: `Promise<RateLimitDecision>`
+Returned decisions may include:
 
-#### 3. `readBucket(bucketId, identifier)`
+```typescript
+type RateLimitDecision = {
+  allowed: boolean;
+  bucketId: string;
+  identifier: string;
+  limit: number;
+  remaining: number;
+  used: number;
+  reset: number;
+  resetDate: Date;
+  degraded: boolean;
+  policyId?: string;
+  tier: "single" | "global" | "category" | "endpoint";
+  message?: string;
+  stages?: RateLimitStageDecision[];
+  effective?: EffectiveQuotaMeta;
+};
+```
 
-Reads the current remaining tokens of a bucket without consuming one (non-mutating).
+`stages` contains per-stage decision snapshots. `effective` identifies which stage supplied the root `limit`, `remaining`, and `reset` values.
 
-- **Arguments**:
-  - `bucketId` (`TBucketId`): Target bucket ID.
-  - `identifier` (`string`): Unique identifier.
-- **Returns**: `Promise<RateLimitSnapshot>`
-
-#### 4. `resetBucket(bucketId, identifier)`
-
-Resets the rate limit tokens consumed for a given bucket/identifier.
-
-- **Arguments**:
-  - `bucketId` (`TBucketId`): Target bucket.
-  - `identifier` (`string`): Unique identifier.
-- **Returns**: `Promise<void>`
-
-#### 5. `getHealth()`
-
-Tests Redis connectivity using `PING` and returns a health status payload.
-
-- **Returns**: `Promise<{ healthy: boolean; usingFallback: boolean; failureCount: number; lastFailure: Date \| null }>`
+> [!TIP]
+> In multi-stage policies, root quota fields are optimized for conservative client-facing headers. For exact per-stage state, inspect `decision.stages`.
 
 ---
 
-### HTTP Adapters
+#### 2. `consumeBucket(bucketId, identifier, options?, enforceOptions?)`
 
-Framework-agnostic helpers for returning rate limit status to clients.
+Consumes a token from one bucket without running a full policy pipeline.
 
-#### 1. `toRateLimitResponse(decision, options?)`
+```typescript
+const decision = await rateEngine.consumeBucket("api:default", "user_123", {
+  failureMode: "closed",
+});
+```
 
-Creates a standard 429 JSON response.
+- **Arguments**
+  - `bucketId` (`TBucketId`): The target bucket ID.
+  - `identifier` (`string`): Unique actor identifier, such as an IP, user ID, or API key.
+  - `options` (`ConsumeBucketOptions`): Options such as `{ rate, context, tier, policyId, message, failureMode }`.
+  - `enforceOptions` (`EnforceOptions`): Optional hooks such as `{ waitUntil }`.
 
-- **Arguments**:
-  - `decision` (`RateLimitDecision`): The decision returned from enforcement.
-  - `options` (`{ message?: string, errorCode?: string }`): Customizable body overrides.
-- **Returns**: `Response`
+- **Returns**
+  - `Promise<RateLimitDecision>`
 
-#### 2. `toOAuthSlowDownResponse(decision, options?)`
+> [!WARNING]
+> Direct calls to `consumeBucket()` bypass policy-level pipeline checks. Direct bucket consumption defaults to fail open on Redis errors. Pass `failureMode: "closed"` for sensitive direct bucket checks.
 
-Creates a standard RFC-compliant OAuth 2.0 `slow_down` error response.
+---
 
-- **Arguments**:
-  - `decision` (`RateLimitDecision`): Rate limit decision.
-  - `options` (`{ message?: string }`): Message description override.
-- **Returns**: `Response`
+#### 3. `readBucket(bucketId, identifier)`
 
-#### 3. `getRateLimitHeaders(decision)`
+Reads the current state of a bucket without consuming a token.
 
-Builds standard HTTP response headers (e.g. `X-RateLimit-Limit`, `RateLimit-Reset`).
+```typescript
+const snapshot = await rateEngine.readBucket("api:default", "user_123");
+```
 
-- **Arguments**:
-  - `decision` (`{ limit: number, remaining: number, reset: number }`): Current state of rate limiter.
-- **Returns**: `Record<string, string>`
+- **Returns**
+  - `Promise<RateLimitSnapshot>`
+
+---
+
+#### 4. `resetBucket(bucketId, identifier)`
+
+Resets the consumed tokens for a bucket and identifier.
+
+```typescript
+await rateEngine.resetBucket("auth:login", "user_123");
+```
+
+A successful reset also records Redis connectivity as healthy for the stateful health tracker.
+
+- **Returns**
+  - `Promise<void>`
+
+---
+
+#### 5. `getHealth()`
+
+Pings Redis and returns stateful health telemetry.
+
+```typescript
+const health = await rateEngine.getHealth();
+```
+
+- **Returns**
+
+```typescript
+Promise<{
+  healthy: boolean;
+  usingFallback: boolean;
+  failureCount: number;
+  consecutiveFailures: number;
+  totalFailures: number;
+  lastFailure: Date | null;
+  lastSuccess: Date | null;
+}>;
+```
+
+`failureCount` is kept for backward compatibility and maps directly to `consecutiveFailures`.
+
+> [!NOTE]
+> Health telemetry is stored in memory on the current `RateEngine` instance. In serverless, edge, or horizontally scaled deployments, counters reflect only the current runtime instance, not global Redis health.
+
+---
+
+#### 6. `resetHealth()`
+
+Clears stateful health telemetry.
+
+```typescript
+rateEngine.resetHealth();
+```
+
+This resets:
+
+- `consecutiveFailures`
+- `totalFailures`
+- `lastFailure`
+- `lastSuccess`
+
+Useful for tests, administrative resets, or long-running processes that want to clear historical health counters after recovery.
+
+- **Returns**
+  - `void`
+
+---
+
+## HTTP Adapters
+
+RateEngine includes framework-agnostic helpers for returning rate-limit status to clients.
+
+### `toRateLimitResponse(decision, options?)`
+
+Creates a standard `429 Too Many Requests` JSON response.
+
+```typescript
+return toRateLimitResponse(decision, {
+  message: "Too many requests. Please try again later.",
+  errorCode: "RATE_LIMIT_EXCEEDED",
+});
+```
+
+Response body:
+
+```json
+{
+  "error": "RATE_LIMIT_EXCEEDED",
+  "message": "Too many requests. Please try again later.",
+  "retryAfter": 60,
+  "degraded": false
+}
+```
+
+### `toOAuthSlowDownResponse(decision, options?)`
+
+Creates an OAuth-style `slow_down` response for polling and device-flow endpoints.
+
+```typescript
+return toOAuthSlowDownResponse(decision, {
+  message: "Polling too frequently. Please wait before trying again.",
+});
+```
+
+Response body:
+
+```json
+{
+  "error": "slow_down",
+  "error_description": "Polling too frequently. Please wait before trying again.",
+  "retry_after": 60,
+  "degraded": false
+}
+```
+
+### `getRateLimitHeaders(decision)`
+
+Builds rate-limit headers from a decision.
+
+```typescript
+const headers = getRateLimitHeaders(decision);
+```
+
+Returned headers include:
+
+```http
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 42
+X-RateLimit-Reset: 1760000000000
+RateLimit-Limit: 100
+RateLimit-Remaining: 42
+RateLimit-Reset: 60
+```
+
+`X-RateLimit-Reset` is emitted as the absolute reset timestamp in milliseconds. `RateLimit-Reset` is emitted as seconds until reset.
 
 ---
 
 ## Development
 
-To build the source code and generate TS declarations locally:
+To build the package and generate TypeScript declarations:
 
 ```bash
 bun run build
+```
+
+To run the package unit tests:
+
+```bash
+bun run test
+```
+
+To run the package type check:
+
+```bash
+bun run typecheck
+```
+
+After building, verify the published runtime exports:
+
+```bash
+bun run test:smoke
 ```
 
 ---

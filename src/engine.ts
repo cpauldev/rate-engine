@@ -1,86 +1,17 @@
 import { type Duration, Ratelimit } from "@upstash/ratelimit";
 
 import type {
-  BucketConfig,
-  RateLimitDecision,
-  RateLimitFailureReason,
-  RateLimitPolicy,
-  RateLimitSnapshot,
-  RateLimitTier,
+  ConsumeBucketOptions,
+  EnforceOptions,
   RateEngineContext,
   RateEngineLogger,
+  RateEngineOptions,
   RateEngineRedisClient,
+  RateLimitDecision,
+  RateLimitFailureReason,
+  RateLimitSnapshot,
+  RateLimitStageDecision,
 } from "./types";
-
-/**
- * Options to instantiate a RateEngine instance.
- */
-export type RateEngineOptions<
-  TPolicyId extends string,
-  TBucketId extends string,
-  TContext extends RateEngineContext,
-> = {
-  /** A duck-typed Redis client instance. Compatible with @upstash/redis or ioredis. */
-  redis: RateEngineRedisClient;
-  /** Configuration defining the limits and window durations for all buckets. */
-  buckets: Record<TBucketId, BucketConfig>;
-  /** Configuration mapping policy IDs to their cascaded checking stages. */
-  policies: Record<
-    TPolicyId,
-    | Omit<RateLimitPolicy<TBucketId, TContext>, "failureMode">
-    | RateLimitPolicy<TBucketId, TContext>
-  >;
-  /** A set of policy IDs that must fail-closed (block the request) if the Redis backend is degraded. */
-  closedFailurePolicies?: TPolicyId[] | Set<TPolicyId>;
-  /** Logging interface to report background metrics errors or health pings. Defaults to no-op. */
-  logger?: RateEngineLogger;
-  /** Redis execution timeout in milliseconds. Defaults to 1000ms. */
-  redisTimeoutMs?: number;
-  /** Fake reset delay in ms applied to fallback snapshots if Redis goes offline. Defaults to 60000ms. */
-  fallbackResetMs?: number;
-  /** A prefix mapping overrides. Useful for matching legacy redis namespaces (e.g. { "auth": "legacy:auth" }). */
-  bucketPrefixOverrides?: Partial<Record<TBucketId, string>>;
-  /** Dynamic policy hook to swap out policies at runtime (e.g., swapping to strict checkout limits). */
-  resolvePolicy?: (
-    policyId: TPolicyId,
-    context: TContext,
-  ) => Promise<TPolicyId> | TPolicyId;
-  /** Shared cache Map to cache tokens locally and bypass Redis connection overhead. */
-  ephemeralCache?: Map<string, number>;
-  /** Telemetry callback invoked when a rate limit is violated or if a fail-closed policy fails during degradation. */
-  onViolation?: (
-    context: TContext,
-    decision: RateLimitDecision<TPolicyId, TBucketId>,
-  ) => Promise<void> | void;
-};
-
-/**
- * Options passed to manual bucket consumption calls.
- */
-export type ConsumeBucketOptions<TPolicyId extends string> = {
-  /** Optional custom token cost to consume for this request. Defaults to 1. */
-  rate?: number;
-  /** Metadata parameters passed to Upstash analytics uploads. */
-  context?: {
-    ip?: string;
-    userAgent?: string;
-    country?: string;
-  };
-  /** The evaluation tier categorization level. Defaults to "single". */
-  tier?: RateLimitTier;
-  /** The ID of the policy triggering this bucket consume, if applicable. */
-  policyId?: TPolicyId;
-  /** Override error message if this consume blocks. */
-  message?: string;
-};
-
-/**
- * Options passed to policy enforcement calls.
- */
-export type EnforceOptions = {
-  /** Wait-until context method used to keep background analytics upload promises alive in serverless/edge environments. */
-  waitUntil?: (promise: Promise<unknown>) => void;
-};
 
 /**
  * High-performance, client-agnostic rate limiting engine for TypeScript.
@@ -98,6 +29,13 @@ export class RateEngine<
   private closedFailurePoliciesSet: Set<TPolicyId>;
   private redisTimeoutMs: number;
   private fallbackResetMs: number;
+  private analytics: boolean;
+
+  // Stateful health tracking metrics
+  private consecutiveFailures = 0;
+  private totalFailures = 0;
+  private lastFailure: Date | null = null;
+  private lastSuccess: Date | null = null;
 
   /**
    * Initializes a new instance of the RateEngine engine.
@@ -111,6 +49,7 @@ export class RateEngine<
     this.logger = options.logger ?? {};
     this.redisTimeoutMs = options.redisTimeoutMs ?? 1000;
     this.fallbackResetMs = options.fallbackResetMs ?? 60000;
+    this.analytics = options.analytics ?? true;
 
     if (options.closedFailurePolicies instanceof Set) {
       this.closedFailurePoliciesSet = options.closedFailurePolicies;
@@ -119,6 +58,47 @@ export class RateEngine<
     } else {
       this.closedFailurePoliciesSet = new Set();
     }
+  }
+
+  private recordSuccess(): void {
+    this.consecutiveFailures = 0;
+    this.lastSuccess = new Date();
+  }
+
+  private recordFailure(): void {
+    this.consecutiveFailures++;
+    this.totalFailures++;
+    this.lastFailure = new Date();
+  }
+
+  private getHealthStatus(healthy: boolean): {
+    healthy: boolean;
+    usingFallback: boolean;
+    failureCount: number;
+    consecutiveFailures: number;
+    totalFailures: number;
+    lastFailure: Date | null;
+    lastSuccess: Date | null;
+  } {
+    return {
+      healthy,
+      usingFallback: !healthy,
+      failureCount: healthy ? 0 : this.consecutiveFailures,
+      consecutiveFailures: this.consecutiveFailures,
+      totalFailures: this.totalFailures,
+      lastFailure: this.lastFailure,
+      lastSuccess: this.lastSuccess,
+    };
+  }
+
+  /**
+   * Resets all stateful health metrics (consecutive failures, total failures, etc.).
+   */
+  public resetHealth(): void {
+    this.consecutiveFailures = 0;
+    this.totalFailures = 0;
+    this.lastFailure = null;
+    this.lastSuccess = null;
   }
 
   /**
@@ -170,7 +150,7 @@ export class RateEngine<
       >[0]["redis"],
       limiter: algorithmImpl,
       prefix: this.getBucketPrefix(bucketId),
-      analytics: true,
+      analytics: this.analytics,
       timeout: this.redisTimeoutMs,
       ephemeralCache: this.options.ephemeralCache ?? this.defaultSharedCache,
     });
@@ -225,6 +205,35 @@ export class RateEngine<
     });
   }
 
+  private createAllowedDecision(
+    policyId: TPolicyId,
+    decisions: RateLimitStageDecision<TPolicyId, TBucketId>[],
+  ): RateLimitDecision<TPolicyId, TBucketId> {
+    const lowestRemainingDecision = decisions.reduce((lowest, current) =>
+      current.remaining < lowest.remaining ? current : lowest,
+    );
+
+    const latestResetDecision = decisions.reduce((latest, current) =>
+      current.reset > latest.reset ? current : latest,
+    );
+
+    return {
+      ...lowestRemainingDecision,
+      reset: latestResetDecision.reset,
+      resetDate: latestResetDecision.resetDate,
+      allowed: true,
+      policyId,
+      stages: decisions,
+      effective: {
+        composite:
+          lowestRemainingDecision.bucketId !== latestResetDecision.bucketId,
+        limitSourceBucketId: lowestRemainingDecision.bucketId,
+        remainingSourceBucketId: lowestRemainingDecision.bucketId,
+        resetSourceBucketId: latestResetDecision.bucketId,
+      },
+    };
+  }
+
   /**
    * Consumes a single token from a specific rate limit bucket.
    *
@@ -240,14 +249,17 @@ export class RateEngine<
     options?: ConsumeBucketOptions<TPolicyId>,
     enforceOptions?: EnforceOptions,
   ): Promise<RateLimitDecision<TPolicyId, TBucketId>> {
+    const limiter = this.getLimiter(bucketId);
+
     try {
-      const limiter = this.getLimiter(bucketId);
       const result = await limiter.limit(identifier, {
         rate: options?.rate,
         ip: options?.context?.ip,
         userAgent: options?.context?.userAgent,
         country: options?.context?.country,
       });
+
+      this.recordSuccess();
 
       if (result.pending) {
         if (enforceOptions?.waitUntil) {
@@ -283,6 +295,7 @@ export class RateEngine<
         message: options?.message,
       };
     } catch (error) {
+      this.recordFailure();
       this.logger.error?.("[RateEngine] Bucket consume failed", {
         bucketId,
         identifier,
@@ -290,12 +303,19 @@ export class RateEngine<
       });
 
       const fallback = this.createFallbackSnapshot(bucketId, identifier);
+      const failureMode = options?.failureMode ?? "open";
+      const fallbackMessage =
+        options?.message ??
+        (failureMode === "closed"
+          ? "Rate limiter unavailable. Please try again later."
+          : undefined);
+
       return {
         ...fallback,
-        allowed: true, // Fail-open inside individual bucket consumes
+        allowed: failureMode === "open",
         tier: options?.tier ?? "single",
         policyId: options?.policyId,
-        message: options?.message,
+        message: fallbackMessage,
       };
     }
   }
@@ -311,9 +331,11 @@ export class RateEngine<
     bucketId: TBucketId,
     identifier: string,
   ): Promise<RateLimitSnapshot<TBucketId>> {
+    const limiter = this.getLimiter(bucketId);
+
     try {
-      const limiter = this.getLimiter(bucketId);
       const result = await limiter.getRemaining(identifier);
+      this.recordSuccess();
       return this.toSnapshot({
         bucketId,
         identifier,
@@ -323,6 +345,7 @@ export class RateEngine<
         degraded: false,
       });
     } catch (error) {
+      this.recordFailure();
       this.logger.error?.("[RateEngine] Bucket read failed", {
         bucketId,
         identifier,
@@ -342,10 +365,13 @@ export class RateEngine<
     bucketId: TBucketId,
     identifier: string,
   ): Promise<void> {
+    const limiter = this.getLimiter(bucketId);
+
     try {
-      const limiter = this.getLimiter(bucketId);
       await limiter.resetUsedTokens(identifier);
+      this.recordSuccess();
     } catch (error) {
+      this.recordFailure();
       this.logger.error?.("[RateEngine] Failed to reset bucket", {
         bucketId,
         identifier,
@@ -395,8 +421,10 @@ export class RateEngine<
     }
 
     const failureMode = this.getFailureMode(policyId);
-    let lastAllowedDecision: RateLimitDecision<TPolicyId, TBucketId> | null =
-      null;
+    if (!policy.stages || policy.stages.length === 0) {
+      throw new Error(`[RateEngine] Policy has no stages defined: ${policyId}`);
+    }
+    const decisions: RateLimitStageDecision<TPolicyId, TBucketId>[] = [];
 
     for (const stage of policy.stages) {
       const bucketId =
@@ -418,6 +446,7 @@ export class RateEngine<
           tier: stage.tier,
           policyId,
           message: stage.message,
+          failureMode,
           context: {
             ip: context.ipAddress,
             userAgent: context.userAgent,
@@ -426,6 +455,7 @@ export class RateEngine<
         },
         enforceOptions,
       );
+      decisions.push(decision);
 
       // Handle fail-closed mode when limiter backend is degraded/unavailable
       if (decision.degraded && failureMode === "closed") {
@@ -435,6 +465,7 @@ export class RateEngine<
           message:
             decision.message ??
             "Service temporarily unavailable. Please try again later.",
+          stages: decisions,
         };
         if (this.options.onViolation) {
           await this.options.onViolation(context, blockedDecision);
@@ -443,24 +474,22 @@ export class RateEngine<
       }
 
       if (!decision.allowed) {
+        const blockedDecision: RateLimitDecision<TPolicyId, TBucketId> = {
+          ...decision,
+          stages: decisions,
+        };
         if (this.options.onViolation) {
-          await this.options.onViolation(context, decision);
+          await this.options.onViolation(context, blockedDecision);
         }
-        return decision;
+        return blockedDecision;
       }
-
-      lastAllowedDecision = decision;
     }
 
-    if (!lastAllowedDecision) {
-      throw new Error(`[RateEngine] Policy has no stages defined: ${policyId}`);
-    }
-
-    return lastAllowedDecision;
+    return this.createAllowedDecision(policyId, decisions);
   }
 
   /**
-   * Performs a health check check on the rate limiter Redis connection.
+   * Performs a health check on the rate limiter Redis connection.
    *
    * @returns Health details.
    */
@@ -468,24 +497,19 @@ export class RateEngine<
     healthy: boolean;
     usingFallback: boolean;
     failureCount: number;
+    consecutiveFailures: number;
+    totalFailures: number;
     lastFailure: Date | null;
+    lastSuccess: Date | null;
   }> {
     try {
       await this.redis.ping();
-      return {
-        healthy: true,
-        usingFallback: false,
-        failureCount: 0,
-        lastFailure: null,
-      };
+      this.recordSuccess();
+      return this.getHealthStatus(true);
     } catch (error) {
       this.logger.error?.("[RateEngine] Health check failed", { error });
-      return {
-        healthy: false,
-        usingFallback: true,
-        failureCount: 1,
-        lastFailure: new Date(),
-      };
+      this.recordFailure();
+      return this.getHealthStatus(false);
     }
   }
 }
