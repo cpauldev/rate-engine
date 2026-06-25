@@ -1,4 +1,4 @@
-export { RateEngine } from "./engine";
+export { RateEngine } from "./rate-engine";
 
 export {
   type RateEngineOptions,

@@ -1,6 +1,6 @@
 import { mock } from "bun:test";
 
-import { RateEngine } from "../engine";
+import { RateEngine } from "../rate-engine";
 import type {
   BucketConfig,
   RateEngineContext,
@@ -147,7 +147,6 @@ export function createMockedEngine(
       Record<TestPolicyId, RateLimitPolicy<TestBucketId, TestContext>>
     >;
     limiter?: TestLimiter;
-    closedFailurePolicies?: TestPolicyId[] | Set<TestPolicyId>;
     resolvePolicy?: (
       policyId: TestPolicyId,
       context: TestContext,
@@ -172,7 +171,6 @@ export function createMockedEngine(
       ...defaultPolicies,
       ...options.policies,
     } as Record<TestPolicyId, RateLimitPolicy<TestBucketId, TestContext>>,
-    closedFailurePolicies: options.closedFailurePolicies,
     resolvePolicy: options.resolvePolicy,
     fallbackResetMs: options.fallbackResetMs,
   } satisfies RateEngineOptions<TestPolicyId, TestBucketId, TestContext>);

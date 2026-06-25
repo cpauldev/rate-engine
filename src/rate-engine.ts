@@ -26,7 +26,6 @@ export class RateEngine<
   private logger: RateEngineLogger;
   private limiterCache = new Map<TBucketId, Ratelimit>();
   private defaultSharedCache = new Map<string, number>();
-  private closedFailurePoliciesSet: Set<TPolicyId>;
   private redisTimeoutMs: number;
   private fallbackResetMs: number;
   private analytics: boolean;
@@ -50,14 +49,6 @@ export class RateEngine<
     this.redisTimeoutMs = options.redisTimeoutMs ?? 1000;
     this.fallbackResetMs = options.fallbackResetMs ?? 60000;
     this.analytics = options.analytics ?? true;
-
-    if (options.closedFailurePolicies instanceof Set) {
-      this.closedFailurePoliciesSet = options.closedFailurePolicies;
-    } else if (Array.isArray(options.closedFailurePolicies)) {
-      this.closedFailurePoliciesSet = new Set(options.closedFailurePolicies);
-    } else {
-      this.closedFailurePoliciesSet = new Set();
-    }
   }
 
   private recordSuccess(): void {
@@ -74,7 +65,6 @@ export class RateEngine<
   private getHealthStatus(healthy: boolean): {
     healthy: boolean;
     usingFallback: boolean;
-    failureCount: number;
     consecutiveFailures: number;
     totalFailures: number;
     lastFailure: Date | null;
@@ -83,7 +73,6 @@ export class RateEngine<
     return {
       healthy,
       usingFallback: !healthy,
-      failureCount: healthy ? 0 : this.consecutiveFailures,
       consecutiveFailures: this.consecutiveFailures,
       totalFailures: this.totalFailures,
       lastFailure: this.lastFailure,
@@ -388,10 +377,10 @@ export class RateEngine<
    */
   public getFailureMode(policyId: TPolicyId): "open" | "closed" {
     const policy = this.options.policies[policyId];
-    if (policy && "failureMode" in policy) {
-      return policy.failureMode;
+    if (!policy) {
+      throw new Error(`[RateEngine] Undefined policy: ${policyId}`);
     }
-    return this.closedFailurePoliciesSet.has(policyId) ? "closed" : "open";
+    return policy.failureMode;
   }
 
   /**
@@ -496,7 +485,6 @@ export class RateEngine<
   public async getHealth(): Promise<{
     healthy: boolean;
     usingFallback: boolean;
-    failureCount: number;
     consecutiveFailures: number;
     totalFailures: number;
     lastFailure: Date | null;

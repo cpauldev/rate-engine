@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test";
 
-import { RateEngine } from "../engine";
+import { RateEngine } from "../rate-engine";
 import type { BucketConfig, RateEngineRedisClient } from "../types";
 import {
   type TestBucketId,
@@ -592,39 +592,24 @@ describe("RateEngine", () => {
       });
     });
 
-    it("resolves failure mode from policy, closedFailurePolicies arrays and sets, then default open", () => {
-      const arrayEngine = createMockedEngine({
-        closedFailurePolicies: ["legacyClosed"],
+    it("resolves failure mode from explicit policy settings", () => {
+      const engine = createMockedEngine({
         policies: {
-          legacyClosed: {
-            stages: [],
-            failureMode: "open",
-          },
           explicitOpen: {
             stages: [],
             failureMode: "open",
           },
+          explicitClosed: {
+            stages: [],
+            failureMode: "closed",
+          },
         },
       }).engine;
-      expect(arrayEngine.getFailureMode("legacyClosed")).toBe("open");
-
-      const omittedPolicyEngine = new RateEngine<
-        TestPolicyId,
-        TestBucketId,
-        TestContext
-      >({
-        redis: createRedisMock(),
-        buckets: defaultBuckets,
-        policies: {
-          legacyClosed: { stages: [] },
-          explicitOpen: { stages: [], failureMode: "open" },
-        },
-        closedFailurePolicies: new Set<TestPolicyId>(["legacyClosed"]),
-      });
-
-      expect(omittedPolicyEngine.getFailureMode("legacyClosed")).toBe("closed");
-      expect(omittedPolicyEngine.getFailureMode("explicitOpen")).toBe("open");
-      expect(omittedPolicyEngine.getFailureMode("basic")).toBe("open");
+      expect(engine.getFailureMode("explicitClosed")).toBe("closed");
+      expect(engine.getFailureMode("explicitOpen")).toBe("open");
+      expect(() => engine.getFailureMode("unknown")).toThrow(
+        "[RateEngine] Undefined policy: unknown",
+      );
     });
   });
 
@@ -647,12 +632,10 @@ describe("RateEngine", () => {
       const recovered = await engine.getHealth();
 
       expect(failed1.consecutiveFailures).toBe(1);
-      expect(failed1.failureCount).toBe(1);
       expect(failed2.consecutiveFailures).toBe(2);
       expect(failed2.totalFailures).toBe(2);
       expect(recovered.healthy).toBe(true);
       expect(recovered.consecutiveFailures).toBe(0);
-      expect(recovered.failureCount).toBe(0);
       expect(recovered.totalFailures).toBe(2);
       expect(recovered.lastFailure).not.toBeNull();
 

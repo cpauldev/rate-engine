@@ -209,13 +209,7 @@ export type RateEngineOptions<
   /** Configuration defining the limits and window durations for all buckets. */
   buckets: Record<TBucketId, BucketConfig>;
   /** Configuration mapping policy IDs to their cascaded checking stages. */
-  policies: Record<
-    TPolicyId,
-    | Omit<RateLimitPolicy<TBucketId, TContext>, "failureMode">
-    | RateLimitPolicy<TBucketId, TContext>
-  >;
-  /** A set of policy IDs that must fail-closed (block the request) if the Redis backend is degraded. */
-  closedFailurePolicies?: TPolicyId[] | Set<TPolicyId>;
+  policies: Record<TPolicyId, RateLimitPolicy<TBucketId, TContext>>;
   /** Logging interface to report background metrics errors or health pings. Defaults to no-op. */
   logger?: RateEngineLogger;
   /** Redis execution timeout in milliseconds. Defaults to 1000ms. */
@@ -224,7 +218,7 @@ export type RateEngineOptions<
   fallbackResetMs?: number;
   /** Enables @upstash/ratelimit analytics uploads. Defaults to true. */
   analytics?: boolean;
-  /** A prefix mapping overrides. Useful for matching legacy redis namespaces (e.g. { "auth": "legacy:auth" }). */
+  /** Optional per-bucket Redis key prefix overrides. */
   bucketPrefixOverrides?: Partial<Record<TBucketId, string>>;
   /** Dynamic policy hook to swap out policies at runtime (e.g., swapping to strict checkout limits). */
   resolvePolicy?: (

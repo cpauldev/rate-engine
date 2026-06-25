@@ -11,7 +11,7 @@ function getRetryAfterSeconds(reset: number): number {
 }
 
 /**
- * Generates RFC-compliant and custom rate limit response headers.
+ * Generates standard rate limit response headers.
  *
  * @param decision Object containing the current rate limit status.
  * @returns An object map of rate limit headers (keys are case-insensitive HTTP headers).
@@ -24,9 +24,6 @@ export function getRateLimitHeaders(decision: {
   const resetSeconds = getRetryAfterSeconds(decision.reset);
 
   return {
-    "X-RateLimit-Limit": String(decision.limit),
-    "X-RateLimit-Remaining": String(decision.remaining),
-    "X-RateLimit-Reset": String(decision.reset),
     "RateLimit-Limit": String(decision.limit),
     "RateLimit-Remaining": String(decision.remaining),
     "RateLimit-Reset": String(resetSeconds),

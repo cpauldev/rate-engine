@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] - 2026-06-25
+
+This release removes pre-public legacy compatibility aliases and tightens the public API for new package consumers.
+
+### Breaking Changes
+
+- Removed `closedFailurePolicies` from `RateEngineOptions`. Configure fail-closed behavior directly on each policy with `failureMode: "closed"`.
+- Changed `RateEngineOptions.policies` so every policy must include an explicit `failureMode`.
+- Removed the `failureCount` alias from `getHealth()` results. Use `consecutiveFailures`.
+- Removed `X-RateLimit-*` headers from `getRateLimitHeaders()` and `toRateLimitResponse()`. The HTTP helpers now emit standard `RateLimit-*` headers only.
+- Changed `getFailureMode(policyId)` to throw for unknown policies instead of returning `"open"`.
+
+### Changed
+
+- Updated documentation examples to show `getRateLimitHeaders()` on successful responses that expose quota metadata.
+- Updated health examples and website integration guidance to use `consecutiveFailures`.
+
 ## [0.2.0] - 2026-06-24
 
 This release improves fail-closed safety, composite quota reporting, health telemetry, public type organization, and package documentation.

@@ -9,7 +9,7 @@ import { createDecision } from "./test-utils";
 
 describe("HTTP helpers", () => {
   describe("getRateLimitHeaders", () => {
-    it("emits legacy and standard rate limit headers", () => {
+    it("emits standard rate limit headers", () => {
       const reset = Date.now() + 60_000;
 
       const headers = getRateLimitHeaders({
@@ -18,13 +18,11 @@ describe("HTTP helpers", () => {
         reset,
       });
 
-      expect(headers["X-RateLimit-Limit"]).toBe("100");
-      expect(headers["X-RateLimit-Remaining"]).toBe("42");
-      expect(headers["X-RateLimit-Reset"]).toBe(String(reset));
       expect(headers["RateLimit-Limit"]).toBe("100");
       expect(headers["RateLimit-Remaining"]).toBe("42");
       expect(Number(headers["RateLimit-Reset"])).toBeGreaterThanOrEqual(59);
       expect(Number(headers["RateLimit-Reset"])).toBeLessThanOrEqual(60);
+      expect(headers["X-RateLimit-Limit"]).toBeUndefined();
     });
 
     it("floors relative reset seconds at 1 for current or past reset times", () => {
@@ -53,8 +51,8 @@ describe("HTTP helpers", () => {
       expect(response.status).toBe(429);
       expect(response.headers.get("Content-Type")).toBe("application/json");
       expect(response.headers.get("Retry-After")).not.toBeNull();
-      expect(response.headers.get("X-RateLimit-Limit")).toBe("100");
       expect(response.headers.get("RateLimit-Remaining")).toBe("0");
+      expect(response.headers.get("X-RateLimit-Limit")).toBeNull();
       expect(body).toMatchObject({
         error: "RATE_LIMIT_EXCEEDED",
         message: "Too many requests. Please try again later.",
