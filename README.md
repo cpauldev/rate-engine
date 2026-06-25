@@ -2,7 +2,7 @@
 
 # RateEngine: Rate Limiting Engine for TypeScript
 
-![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Rate Limiting](https://img.shields.io/badge/-Rate_Limiting-C2410C?style=flat-square) ![Pipelines](https://img.shields.io/badge/-Policy_Pipelines-0F766E?style=flat-square) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.3.0-blue?style=flat-square)](./CHANGELOG.md)
+![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Rate Limiting](https://img.shields.io/badge/-Rate_Limiting-C2410C?style=flat-square) ![Pipelines](https://img.shields.io/badge/-Policy_Pipelines-0F766E?style=flat-square) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.3.1-blue?style=flat-square)](./CHANGELOG.md)
 
 RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.
 
@@ -676,7 +676,7 @@ bun run test:smoke
 
 ## Related Packages
 
-- [`route-engine`](https://github.com/cpauldev/route-engine) for safe HTTP route boundaries.
+- [`boundary-engine`](https://github.com/cpauldev/boundary-engine) for safe HTTP route boundaries.
 - [`redact-log`](https://github.com/cpauldev/redact-log) for safe logging.
 - [`secret-engine`](https://github.com/cpauldev/secret-engine) for context-bound encryption and secret handling.
 - [`session-engine`](https://github.com/cpauldev/session-engine) for browser session and cache lifecycle management.
