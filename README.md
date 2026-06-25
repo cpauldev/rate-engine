@@ -2,7 +2,7 @@
 
 # RateEngine: Rate Limiting Engine for TypeScript
 
-![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.2.0-blue?style=flat-square)](./CHANGELOG.md)
+![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.2.1-blue?style=flat-square)](./CHANGELOG.md)
 
 RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.
 
