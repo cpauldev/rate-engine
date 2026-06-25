@@ -1,6 +1,6 @@
 {
   "name": "rate-engine",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "MIT",
   "author": "Christian Paul (https://github.com/cpauldev)",
   "description": "RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.",
