@@ -1,17 +1,24 @@
 import { describe, expect, it, mock } from "bun:test";
 
+import type {
+  BucketConfig,
+  RateEngineOptions,
+  RateEngineRedisClient,
+  RateLimitPolicy,
+} from "../types";
+
 import { RateEngine } from "../rate-engine";
-import type { BucketConfig, RateEngineRedisClient } from "../types";
 import {
-  type TestBucketId,
-  type TestContext,
-  type TestPolicyId,
   createFailingRedisMock,
   createLimitResult,
   createLoggerMock,
   createMockedEngine,
   createRedisMock,
   defaultBuckets,
+  defaultPolicies,
+  type TestBucketId,
+  type TestContext,
+  type TestPolicyId,
 } from "./test-utils";
 
 describe("RateEngine", () => {
@@ -146,7 +153,7 @@ describe("RateEngine", () => {
       const redis = createRedisMock();
       const engine = new RateEngine<TestPolicyId, TestBucketId, TestContext>({
         redis,
-        buckets: { bucketA: defaultBuckets.bucketA } as Record<
+        buckets: { bucketA: defaultBuckets.bucketA } as unknown as Record<
           TestBucketId,
           BucketConfig
         >,
@@ -156,6 +163,31 @@ describe("RateEngine", () => {
       await expect(engine.consumeBucket("bucketB", "user-1")).rejects.toThrow(
         "[RateEngine] Missing configuration for bucket: bucketB",
       );
+    });
+
+    it("trims identifiers and rejects empty or oversized values", async () => {
+      const { engine, limiter } = createMockedEngine();
+
+      await engine.consumeBucket("bucketA", "  user-1  ");
+      expect(limiter.limit).toHaveBeenCalledWith("user-1", expect.any(Object));
+
+      await expect(engine.consumeBucket("bucketA", "   ")).rejects.toThrow(
+        "[RateEngine] Identifier is empty or whitespace-only",
+      );
+      await expect(
+        engine.consumeBucket("bucketA", "ü".repeat(257)),
+      ).rejects.toThrow("[RateEngine] Identifier exceeds 512 bytes");
+    });
+
+    it("rejects invalid token costs before calling the limiter", async () => {
+      const { engine, limiter } = createMockedEngine();
+
+      for (const rate of [0, -1, 1.5, Number.POSITIVE_INFINITY]) {
+        await expect(
+          engine.consumeBucket("bucketA", "user-1", { rate }),
+        ).rejects.toThrow("[RateEngine] Rate must be a positive safe integer");
+      }
+      expect(limiter.limit).not.toHaveBeenCalled();
     });
   });
 
@@ -292,7 +324,7 @@ describe("RateEngine", () => {
       limiter.getRemaining.mockRejectedValueOnce(new Error("read failed"));
 
       const snapshot = await engine.readBucket("bucketA", "user-1");
-      const health = await engine.getHealth();
+      const metrics = engine.getInstanceMetrics();
 
       expect(snapshot.degraded).toBe(true);
       expect(snapshot.reason).toBe("error");
@@ -300,51 +332,73 @@ describe("RateEngine", () => {
         "[RateEngine] Bucket read failed",
         expect.objectContaining({
           bucketId: "bucketA",
-          identifier: "user-1",
           error: expect.any(Error),
         }),
       );
-      expect(health.totalFailures).toBe(1);
+      expect(metrics.totalFailures).toBe(1);
     });
 
     it("resets a bucket and records success", async () => {
       const { engine, limiter } = createMockedEngine();
 
-      await engine.resetBucket("bucketA", "user-1");
-      const health = await engine.getHealth();
+      const result = await engine.resetBucket("bucketA", "user-1");
+      const metrics = engine.getInstanceMetrics();
 
+      expect(result).toEqual({ ok: true });
       expect(limiter.resetUsedTokens).toHaveBeenCalledWith("user-1");
-      expect(health.healthy).toBe(true);
-      expect(health.lastSuccess).not.toBeNull();
+      expect(metrics.lastSuccess).not.toBeNull();
     });
 
-    it("logs and records failure when resetBucket fails without throwing", async () => {
+    it("returns an explicit failure when resetBucket cannot reach Redis", async () => {
       const logger = createLoggerMock();
       const { engine, limiter } = createMockedEngine({ logger });
       limiter.resetUsedTokens.mockRejectedValueOnce(new Error("reset failed"));
 
-      await expect(engine.resetBucket("bucketA", "user-1")).resolves.toBe(
-        undefined,
-      );
-      const health = await engine.getHealth();
+      const result = await engine.resetBucket("bucketA", "user-1");
+      const metrics = engine.getInstanceMetrics();
 
+      expect(result).toEqual({ ok: false, reason: "backend_error" });
       expect(logger.error).toHaveBeenCalledWith(
         "[RateEngine] Failed to reset bucket",
         expect.objectContaining({
           bucketId: "bucketA",
-          identifier: "user-1",
           error: expect.any(Error),
         }),
       );
-      expect(health.totalFailures).toBe(1);
+      expect(metrics.totalFailures).toBe(1);
+    });
+
+    it("reads multiple buckets concurrently in input order", async () => {
+      const { engine, limiter } = createMockedEngine();
+      limiter.getRemaining
+        .mockResolvedValueOnce({
+          limit: 10,
+          remaining: 7,
+          reset: Date.now() + 10_000,
+        })
+        .mockResolvedValueOnce({
+          limit: 5,
+          remaining: 2,
+          reset: Date.now() + 20_000,
+        });
+
+      const snapshots = await engine.readBuckets([
+        { bucketId: "bucketA", identifier: "user-1" },
+        { bucketId: "bucketB", identifier: "user-1" },
+      ]);
+
+      expect(snapshots.map(({ bucketId }) => bucketId)).toEqual([
+        "bucketA",
+        "bucketB",
+      ]);
+      expect(limiter.getRemaining).toHaveBeenCalledTimes(2);
     });
   });
 
   describe("enforce", () => {
-    it("throws for undefined policy, empty stages, and missing identifiers", async () => {
+    it("throws for undefined policies and missing identifiers", async () => {
       const { engine } = createMockedEngine({
         policies: {
-          empty: { stages: [], failureMode: "open" },
           missingIdentifier: {
             stages: [
               {
@@ -359,10 +413,7 @@ describe("RateEngine", () => {
       });
 
       await expect(engine.enforce("nonexistent", { id: "1" })).rejects.toThrow(
-        "[RateEngine] Undefined policy: nonexistent",
-      );
-      await expect(engine.enforce("empty", { id: "1" })).rejects.toThrow(
-        "[RateEngine] Policy has no stages defined: empty",
+        "[RateEngine] Policy resolution returned an unknown policy",
       );
       await expect(engine.enforce("missingIdentifier", {})).rejects.toThrow(
         "[RateEngine] Missing identifier for policy=missingIdentifier bucket=bucketA",
@@ -403,6 +454,16 @@ describe("RateEngine", () => {
       expect(decision.policyId).toBe("resolved");
       expect(decision.bucketId).toBe("bucketB");
       expect(decision.stages).toBeArrayOfSize(1);
+    });
+
+    it("does not expose an unknown resolved policy ID", async () => {
+      const { engine } = createMockedEngine({
+        resolvePolicy: () => "internal-policy-name",
+      });
+
+      await expect(engine.enforce("basic", { id: "user-1" })).rejects.toThrow(
+        "[RateEngine] Policy resolution returned an unknown policy",
+      );
     });
 
     it("supports dynamic bucket IDs from context", async () => {
@@ -468,6 +529,43 @@ describe("RateEngine", () => {
           allowed: false,
           stages: expect.any(Array),
         }),
+      );
+    });
+
+    it("returns the blocked decision when the violation hook fails", async () => {
+      const logger = createLoggerMock();
+      const { engine, limiter } = createMockedEngine({
+        logger,
+        policies: {
+          blocked: {
+            stages: [
+              {
+                bucketId: "bucketA",
+                identifier: (ctx) => ctx.id,
+                tier: "single",
+              },
+            ],
+            failureMode: "open",
+          },
+        },
+      });
+      (
+        engine as unknown as {
+          options: { onViolation: () => Promise<void> };
+        }
+      ).options.onViolation = async () => {
+        throw new Error("telemetry unavailable");
+      };
+      limiter.limit.mockResolvedValueOnce(
+        createLimitResult({ success: false, remaining: 0 }),
+      );
+
+      const decision = await engine.enforce("blocked", { id: "user-1" });
+
+      expect(decision.allowed).toBe(false);
+      expect(logger.error).toHaveBeenCalledWith(
+        "[RateEngine] Violation callback failed",
+        { error: expect.any(Error) },
       );
     });
 
@@ -596,11 +694,11 @@ describe("RateEngine", () => {
       const engine = createMockedEngine({
         policies: {
           explicitOpen: {
-            stages: [],
+            stages: defaultPolicies.basic!.stages,
             failureMode: "open",
           },
           explicitClosed: {
-            stages: [],
+            stages: defaultPolicies.basic!.stages,
             failureMode: "closed",
           },
         },
@@ -613,38 +711,132 @@ describe("RateEngine", () => {
     });
   });
 
+  describe("configuration validation", () => {
+    it("rejects invalid buckets, policies, and timing options at construction", () => {
+      const create =
+        (
+          overrides: Partial<
+            RateEngineOptions<TestPolicyId, TestBucketId, TestContext>
+          >,
+        ) =>
+        () =>
+          new RateEngine<TestPolicyId, TestBucketId, TestContext>({
+            redis: createRedisMock(),
+            buckets: defaultBuckets,
+            policies: defaultPolicies as Record<
+              TestPolicyId,
+              RateLimitPolicy<TestBucketId, TestContext>
+            >,
+            ...overrides,
+          });
+
+      expect(create({ redisTimeoutMs: 0 })).toThrow(
+        "redisTimeoutMs must be a positive safe integer",
+      );
+      expect(
+        create({
+          buckets: {
+            ...defaultBuckets,
+            bucketA: { requests: 0, window: "1 m" },
+          },
+        }),
+      ).toThrow('Bucket "bucketA" requests must be a positive safe integer');
+      expect(
+        create({
+          buckets: {
+            ...defaultBuckets,
+            bucketA: {
+              requests: 1,
+              window: " ",
+            } as unknown as BucketConfig,
+          },
+        }),
+      ).toThrow('Bucket "bucketA" window must be a positive duration');
+      expect(
+        create({
+          buckets: {
+            ...defaultBuckets,
+            bucketA: {
+              requests: 1,
+              window: "tomorrow",
+            } as unknown as BucketConfig,
+          },
+        }),
+      ).toThrow('Bucket "bucketA" window must be a positive duration');
+      expect(
+        create({
+          buckets: {
+            ...defaultBuckets,
+            bucketA: {
+              requests: 1,
+              window: "1 m",
+              refillRate: 1,
+            },
+          },
+        }),
+      ).toThrow('Bucket "bucketA" refillRate requires tokenBucket');
+      expect(
+        create({
+          policies: {
+            empty: { stages: [], failureMode: "open" },
+          },
+        }),
+      ).toThrow("Policy has no stages defined: empty");
+      expect(
+        create({
+          policies: {
+            invalid: {
+              failureMode: "open",
+              stages: [
+                {
+                  bucketId: "missing" as TestBucketId,
+                  identifier: (context) => context.id,
+                  tier: "single",
+                },
+              ],
+            },
+          },
+        }),
+      ).toThrow('Policy "invalid" references unknown bucket: missing');
+    });
+  });
+
   describe("health telemetry", () => {
     it("tracks success, failures, recovery and reset", async () => {
       const redis = createRedisMock();
       const { engine } = createMockedEngine({ redis });
 
-      const healthy = await engine.getHealth();
-      expect(healthy.healthy).toBe(true);
-      expect(healthy.lastSuccess).not.toBeNull();
+      const healthy = await engine.pingRedis();
+      expect(healthy.reachable).toBe(true);
+      expect(healthy.latencyMs).toBeGreaterThanOrEqual(0);
+      expect(engine.getInstanceMetrics().lastSuccess).not.toBeNull();
 
       (redis.ping as ReturnType<typeof mock>)
         .mockRejectedValueOnce(new Error("failure 1"))
         .mockRejectedValueOnce(new Error("failure 2"))
         .mockResolvedValueOnce("PONG");
 
-      const failed1 = await engine.getHealth();
-      const failed2 = await engine.getHealth();
-      const recovered = await engine.getHealth();
+      const failed1 = await engine.pingRedis();
+      expect(failed1.reachable).toBe(false);
+      expect(engine.getInstanceMetrics().consecutiveFailures).toBe(1);
 
-      expect(failed1.consecutiveFailures).toBe(1);
-      expect(failed2.consecutiveFailures).toBe(2);
-      expect(failed2.totalFailures).toBe(2);
-      expect(recovered.healthy).toBe(true);
-      expect(recovered.consecutiveFailures).toBe(0);
-      expect(recovered.totalFailures).toBe(2);
-      expect(recovered.lastFailure).not.toBeNull();
+      const failed2 = await engine.pingRedis();
+      expect(failed2.reachable).toBe(false);
+      expect(engine.getInstanceMetrics().consecutiveFailures).toBe(2);
+
+      const recovered = await engine.pingRedis();
+      const recoveredMetrics = engine.getInstanceMetrics();
+      expect(recovered.reachable).toBe(true);
+      expect(recoveredMetrics.consecutiveFailures).toBe(0);
+      expect(recoveredMetrics.totalFailures).toBe(2);
+      expect(recoveredMetrics.lastFailure).not.toBeNull();
 
       engine.resetHealth();
-      const reset = await engine.getHealth();
+      const reset = engine.getInstanceMetrics();
       expect(reset.totalFailures).toBe(0);
       expect(reset.consecutiveFailures).toBe(0);
       expect(reset.lastFailure).toBeNull();
-      expect(reset.lastSuccess).not.toBeNull();
+      expect(reset.lastSuccess).toBeNull();
     });
   });
 });

@@ -1,8 +1,7 @@
 {
   "name": "rate-engine",
-  "version": "0.3.1",
-  "license": "MIT",
-  "author": "Christian Paul (https://github.com/cpauldev)",
+  "version": "4.0.0",
+  "private": false,
   "description": "RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.",
   "keywords": [
     "ratelimit",
@@ -25,32 +24,31 @@
     "api-security",
     "ddos-protection"
   ],
+  "homepage": "https://github.com/cpauldev/rate-engine#readme",
+  "bugs": {
+    "url": "https://github.com/cpauldev/rate-engine/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cpauldev/rate-engine.git"
+  },
+  "license": "MIT",
+  "author": "Christian Paul (https://github.com/cpauldev)",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     }
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/cpauldev/rate-engine.git"
-  },
-  "bugs": {
-    "url": "https://github.com/cpauldev/rate-engine/issues"
-  },
-  "homepage": "https://github.com/cpauldev/rate-engine#readme",
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
@@ -61,13 +59,15 @@
   "dependencies": {
     "@upstash/ratelimit": "^2.0.8"
   },
-  "peerDependencies": {
-    "@upstash/redis": "^1.34.3"
-  },
   "devDependencies": {
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.4",
     "bun-types": "^1.3.14",
     "typescript": "^6.0.3"
   },
-  "private": false
+  "peerDependencies": {
+    "@upstash/redis": "^1.34.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }

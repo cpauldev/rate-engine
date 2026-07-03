@@ -2,6 +2,37 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.0] - 2026-07-03
+
+This release separates live Redis checks from instance telemetry, adds concurrent bucket reads, and hardens identifier and callback handling.
+
+### Added
+
+- Added `pingRedis()` for live Redis reachability and round-trip latency.
+- Added `getInstanceMetrics()` for process-local success and failure telemetry.
+- Added `readBuckets()` for concurrent, non-mutating multi-bucket reads.
+- Added public `BucketReadInput`, `RedisPingResult`, and `RateEngineInstanceMetrics` types.
+- Added eager validation for bucket, policy, and timing configuration.
+- Added the public `ResetBucketResult` type.
+
+### Breaking Changes
+
+- Removed `getHealth()`. Use `pingRedis()` for live connectivity and `getInstanceMetrics()` for instance-local telemetry.
+- Unknown dynamic policy resolutions now produce a generic configuration error.
+- Identifier validation now applies consistently to consume, read, reset, and policy enforcement operations.
+- `resetBucket()` now returns an explicit success or backend-error result instead of resolving `void` after a failed reset.
+- `BucketConfig` now defaults its window type to Upstash's supported `Duration` format instead of unrestricted strings.
+
+### Changed
+
+- Violation-hook failures are logged without replacing the rate-limit decision.
+
+### Security
+
+- Empty identifiers and identifiers larger than 512 UTF-8 bytes are rejected before reaching Redis. Oversized identifiers are rejected rather than truncated to avoid collisions between distinct actors.
+- Custom token costs must be positive safe integers.
+- Redis failure logs no longer include actor identifiers, which may contain API keys or other sensitive values.
+
 ## [0.3.0] - 2026-06-25
 
 This release removes pre-public legacy compatibility aliases and tightens the public API for new package consumers.

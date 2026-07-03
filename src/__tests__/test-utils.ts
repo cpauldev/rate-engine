@@ -1,6 +1,5 @@
 import { mock } from "bun:test";
 
-import { RateEngine } from "../rate-engine";
 import type {
   BucketConfig,
   RateEngineContext,
@@ -12,6 +11,8 @@ import type {
   RateLimitPolicy,
   RateLimitSnapshot,
 } from "../types";
+
+import { RateEngine } from "../rate-engine";
 
 export type TestPolicyId = string;
 export type TestBucketId = "bucketA" | "bucketB" | "bucketC";

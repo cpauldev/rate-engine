@@ -1,16 +1,22 @@
 import { type Duration, Ratelimit } from "@upstash/ratelimit";
 
 import type {
+  BucketConfig,
+  BucketReadInput,
   ConsumeBucketOptions,
   EnforceOptions,
   RateEngineContext,
+  RateEngineInstanceMetrics,
   RateEngineLogger,
   RateEngineOptions,
   RateEngineRedisClient,
   RateLimitDecision,
   RateLimitFailureReason,
+  RateLimitPolicy,
   RateLimitSnapshot,
   RateLimitStageDecision,
+  RedisPingResult,
+  ResetBucketResult,
 } from "./types";
 
 /**
@@ -30,7 +36,7 @@ export class RateEngine<
   private fallbackResetMs: number;
   private analytics: boolean;
 
-  // Stateful health tracking metrics
+  // Health telemetry is local to this RateEngine instance.
   private consecutiveFailures = 0;
   private totalFailures = 0;
   private lastFailure: Date | null = null;
@@ -44,11 +50,77 @@ export class RateEngine<
   constructor(
     private options: RateEngineOptions<TPolicyId, TBucketId, TContext>,
   ) {
+    this.validateOptions(options);
     this.redis = options.redis;
     this.logger = options.logger ?? {};
     this.redisTimeoutMs = options.redisTimeoutMs ?? 1000;
     this.fallbackResetMs = options.fallbackResetMs ?? 60000;
     this.analytics = options.analytics ?? true;
+  }
+
+  /**
+   * Validates static configuration before the engine handles requests.
+   */
+  private validateOptions(
+    options: RateEngineOptions<TPolicyId, TBucketId, TContext>,
+  ): void {
+    const assertPositiveInteger = (value: number, name: string) => {
+      if (!Number.isSafeInteger(value) || value < 1) {
+        throw new Error(`[RateEngine] ${name} must be a positive safe integer`);
+      }
+    };
+
+    if (options.redisTimeoutMs !== undefined) {
+      assertPositiveInteger(options.redisTimeoutMs, "redisTimeoutMs");
+    }
+    if (options.fallbackResetMs !== undefined) {
+      assertPositiveInteger(options.fallbackResetMs, "fallbackResetMs");
+    }
+
+    for (const [bucketId, config] of Object.entries(options.buckets) as Array<
+      [TBucketId, BucketConfig]
+    >) {
+      assertPositiveInteger(config.requests, `Bucket "${bucketId}" requests`);
+      const windowMatch = config.window
+        .trim()
+        .match(/^(\d+(?:\.\d+)?)\s?(ms|s|m|h|d)$/);
+      if (!windowMatch || Number(windowMatch[1]) <= 0) {
+        throw new Error(
+          `[RateEngine] Bucket "${bucketId}" window must be a positive duration`,
+        );
+      }
+      if (config.refillRate !== undefined) {
+        if (config.algorithm !== "tokenBucket") {
+          throw new Error(
+            `[RateEngine] Bucket "${bucketId}" refillRate requires tokenBucket`,
+          );
+        }
+        assertPositiveInteger(
+          config.refillRate,
+          `Bucket "${bucketId}" refillRate`,
+        );
+      }
+    }
+
+    for (const [policyId, policy] of Object.entries(options.policies) as Array<
+      [TPolicyId, RateLimitPolicy<TBucketId, TContext>]
+    >) {
+      if (policy.stages.length === 0) {
+        throw new Error(
+          `[RateEngine] Policy has no stages defined: ${policyId}`,
+        );
+      }
+      for (const stage of policy.stages) {
+        if (
+          typeof stage.bucketId === "string" &&
+          !Object.hasOwn(options.buckets, stage.bucketId)
+        ) {
+          throw new Error(
+            `[RateEngine] Policy "${policyId}" references unknown bucket: ${stage.bucketId}`,
+          );
+        }
+      }
+    }
   }
 
   private recordSuccess(): void {
@@ -62,26 +134,36 @@ export class RateEngine<
     this.lastFailure = new Date();
   }
 
-  private getHealthStatus(healthy: boolean): {
-    healthy: boolean;
-    usingFallback: boolean;
-    consecutiveFailures: number;
-    totalFailures: number;
-    lastFailure: Date | null;
-    lastSuccess: Date | null;
-  } {
-    return {
-      healthy,
-      usingFallback: !healthy,
-      consecutiveFailures: this.consecutiveFailures,
-      totalFailures: this.totalFailures,
-      lastFailure: this.lastFailure,
-      lastSuccess: this.lastSuccess,
-    };
+  /**
+   * Validates an identifier before it is passed to the rate limiter.
+   *
+   * @param raw The raw identifier value from context or a direct caller.
+   * @returns The trimmed identifier.
+   * @throws If the identifier is empty or exceeds 512 UTF-8 bytes.
+   */
+  private sanitizeIdentifier(raw: string): string {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      throw new Error("[RateEngine] Identifier is empty or whitespace-only");
+    }
+    if (new TextEncoder().encode(trimmed).byteLength > 512) {
+      throw new Error("[RateEngine] Identifier exceeds 512 bytes");
+    }
+    return trimmed;
+  }
+
+  /**
+   * Validates the token cost passed to the rate limiter.
+   */
+  private validateRate(rate: number | undefined): void {
+    if (rate !== undefined && (!Number.isSafeInteger(rate) || rate < 1)) {
+      throw new Error("[RateEngine] Rate must be a positive safe integer");
+    }
   }
 
   /**
    * Resets all stateful health metrics (consecutive failures, total failures, etc.).
+   * Useful in tests or after a confirmed Redis recovery in long-lived processes.
    */
   public resetHealth(): void {
     this.consecutiveFailures = 0;
@@ -224,20 +306,37 @@ export class RateEngine<
   }
 
   /**
-   * Consumes a single token from a specific rate limit bucket.
+   * Invokes the optional violation hook without changing the enforcement result.
+   */
+  private async invokeOnViolation(
+    context: TContext,
+    decision: RateLimitDecision<TPolicyId, TBucketId>,
+  ): Promise<void> {
+    if (!this.options.onViolation) return;
+    try {
+      await this.options.onViolation(context, decision);
+    } catch (error) {
+      this.logger.error?.("[RateEngine] Violation callback failed", { error });
+    }
+  }
+
+  /**
+   * Consumes tokens from a specific rate limit bucket.
    *
    * @param bucketId Target bucket ID.
-   * @param identifier Unique identifier key (e.g. user ID or IP).
-   * @param options Custom parameters (cost, metadata).
+   * @param rawIdentifier Unique identifier key, such as a user ID or IP.
+   * @param options Custom token cost, metadata, and fallback behavior.
    * @param enforceOptions Hooks (like waitUntil for background analytics).
    * @returns A decision representing if the consume is allowed or rate-limited.
    */
   public async consumeBucket(
     bucketId: TBucketId,
-    identifier: string,
+    rawIdentifier: string,
     options?: ConsumeBucketOptions<TPolicyId>,
     enforceOptions?: EnforceOptions,
   ): Promise<RateLimitDecision<TPolicyId, TBucketId>> {
+    const identifier = this.sanitizeIdentifier(rawIdentifier);
+    this.validateRate(options?.rate);
     const limiter = this.getLimiter(bucketId);
 
     try {
@@ -257,10 +356,7 @@ export class RateEngine<
           result.pending.catch((error: unknown) => {
             this.logger.error?.(
               "[RateEngine] Background analytics upload failed",
-              {
-                bucketId,
-                error,
-              },
+              { bucketId, error },
             );
           });
         }
@@ -287,7 +383,6 @@ export class RateEngine<
       this.recordFailure();
       this.logger.error?.("[RateEngine] Bucket consume failed", {
         bucketId,
-        identifier,
         error,
       });
 
@@ -314,12 +409,13 @@ export class RateEngine<
    *
    * @param bucketId Target bucket ID.
    * @param identifier Unique identifier key.
-   * @returns A snapshot details of remaining tokens and reset timers.
+   * @returns A snapshot of remaining tokens and reset timers.
    */
   public async readBucket(
     bucketId: TBucketId,
-    identifier: string,
+    rawIdentifier: string,
   ): Promise<RateLimitSnapshot<TBucketId>> {
+    const identifier = this.sanitizeIdentifier(rawIdentifier);
     const limiter = this.getLimiter(bucketId);
 
     try {
@@ -337,11 +433,26 @@ export class RateEngine<
       this.recordFailure();
       this.logger.error?.("[RateEngine] Bucket read failed", {
         bucketId,
-        identifier,
         error,
       });
       return this.createFallbackSnapshot(bucketId, identifier);
     }
+  }
+
+  /**
+   * Reads multiple buckets concurrently without consuming tokens.
+   *
+   * @param entries Bucket and identifier pairs.
+   * @returns Snapshots in input order.
+   */
+  public async readBuckets(
+    entries: Array<BucketReadInput<TBucketId>>,
+  ): Promise<RateLimitSnapshot<TBucketId>[]> {
+    return Promise.all(
+      entries.map(({ bucketId, identifier }) =>
+        this.readBucket(bucketId, identifier),
+      ),
+    );
   }
 
   /**
@@ -352,20 +463,22 @@ export class RateEngine<
    */
   public async resetBucket(
     bucketId: TBucketId,
-    identifier: string,
-  ): Promise<void> {
+    rawIdentifier: string,
+  ): Promise<ResetBucketResult> {
+    const identifier = this.sanitizeIdentifier(rawIdentifier);
     const limiter = this.getLimiter(bucketId);
 
     try {
       await limiter.resetUsedTokens(identifier);
       this.recordSuccess();
+      return { ok: true };
     } catch (error) {
       this.recordFailure();
       this.logger.error?.("[RateEngine] Failed to reset bucket", {
         bucketId,
-        identifier,
         error,
       });
+      return { ok: false, reason: "backend_error" };
     }
   }
 
@@ -386,12 +499,11 @@ export class RateEngine<
   /**
    * Enforces a multi-stage rate limiting policy sequentially.
    *
-   * Evaluates the pipeline stages (e.g. checking global user limits first, then endpoint-specific limits).
-   * Stops evaluating immediately and returns the blocked decision on the first stage that fails.
+   * Evaluates stages in order and stops at the first blocked decision.
    *
    * @param rawPolicyId The ID of the policy to enforce.
    * @param context Context payloads containing user descriptors (IP, ID, etc.).
-   * @param enforceOptions Hooks (like waitUntil for serverless execution).
+   * @param enforceOptions Hooks such as waitUntil for serverless execution.
    * @returns The final allowed or rate-limited decision.
    */
   public async enforce(
@@ -406,13 +518,16 @@ export class RateEngine<
 
     const policy = this.options.policies[policyId];
     if (!policy) {
-      throw new Error(`[RateEngine] Undefined policy: ${policyId}`);
+      throw new Error(
+        `[RateEngine] Policy resolution returned an unknown policy`,
+      );
     }
 
     const failureMode = this.getFailureMode(policyId);
     if (!policy.stages || policy.stages.length === 0) {
       throw new Error(`[RateEngine] Policy has no stages defined: ${policyId}`);
     }
+
     const decisions: RateLimitStageDecision<TPolicyId, TBucketId>[] = [];
 
     for (const stage of policy.stages) {
@@ -456,9 +571,7 @@ export class RateEngine<
             "Service temporarily unavailable. Please try again later.",
           stages: decisions,
         };
-        if (this.options.onViolation) {
-          await this.options.onViolation(context, blockedDecision);
-        }
+        await this.invokeOnViolation(context, blockedDecision);
         return blockedDecision;
       }
 
@@ -467,9 +580,7 @@ export class RateEngine<
           ...decision,
           stages: decisions,
         };
-        if (this.options.onViolation) {
-          await this.options.onViolation(context, blockedDecision);
-        }
+        await this.invokeOnViolation(context, blockedDecision);
         return blockedDecision;
       }
     }
@@ -478,26 +589,34 @@ export class RateEngine<
   }
 
   /**
-   * Performs a health check on the rate limiter Redis connection.
+   * Pings Redis and measures the round-trip latency.
    *
-   * @returns Health details.
+   * @returns Reachability status and latency.
    */
-  public async getHealth(): Promise<{
-    healthy: boolean;
-    usingFallback: boolean;
-    consecutiveFailures: number;
-    totalFailures: number;
-    lastFailure: Date | null;
-    lastSuccess: Date | null;
-  }> {
+  public async pingRedis(): Promise<RedisPingResult> {
+    const start = Date.now();
     try {
       await this.redis.ping();
       this.recordSuccess();
-      return this.getHealthStatus(true);
+      return { reachable: true, latencyMs: Date.now() - start };
     } catch (error) {
-      this.logger.error?.("[RateEngine] Health check failed", { error });
+      this.logger.error?.("[RateEngine] Redis ping failed", { error });
       this.recordFailure();
-      return this.getHealthStatus(false);
+      return { reachable: false, latencyMs: Date.now() - start };
     }
+  }
+
+  /**
+   * Returns instance-local failure counters for this RateEngine instance.
+   *
+   * @returns In-memory counters for this process-local instance.
+   */
+  public getInstanceMetrics(): RateEngineInstanceMetrics {
+    return {
+      consecutiveFailures: this.consecutiveFailures,
+      totalFailures: this.totalFailures,
+      lastFailure: this.lastFailure,
+      lastSuccess: this.lastSuccess,
+    };
   }
 }

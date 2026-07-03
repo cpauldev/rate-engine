@@ -1,8 +1,8 @@
-<img src="https://raw.githubusercontent.com/cpauldev/rate-engine/main/banner.png" alt="RateEngine Banner" width="100%" />
+<img src="https://raw.githubusercontent.com/cpauldev/rate-engine/main/banner.webp" alt="RateEngine Banner" width="100%" />
 
 # RateEngine: Rate Limiting Engine for TypeScript
 
-![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Rate Limiting](https://img.shields.io/badge/-Rate_Limiting-C2410C?style=flat-square) ![Pipelines](https://img.shields.io/badge/-Policy_Pipelines-0F766E?style=flat-square) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v0.3.1-blue?style=flat-square)](./CHANGELOG.md)
+![TypeScript](https://img.shields.io/badge/-TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white) ![Rate Limiting](https://img.shields.io/badge/-Rate_Limiting-C2410C?style=flat-square) ![Pipelines](https://img.shields.io/badge/-Policy_Pipelines-0F766E?style=flat-square) ![Redis](https://img.shields.io/badge/-Redis-DC382D?style=flat-square&logo=redis&logoColor=white) ![License](https://img.shields.io/badge/-MIT_License-blue?style=flat-square) [![Changelog](https://img.shields.io/badge/Changelog-v4.0.0-blue?style=flat-square)](./CHANGELOG.md)
 
 RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.
 
@@ -39,14 +39,14 @@ Install RateEngine via your preferred package manager:
 # npm
 npm install rate-engine
 
-# yarn
-yarn add rate-engine
-
 # pnpm
 pnpm add rate-engine
 
 # bun
 bun add rate-engine
+
+# yarn
+yarn add rate-engine
 ```
 
 ---
@@ -412,6 +412,35 @@ The `RateEngine` class is initialized with an options object.
 
 ---
 
+### Dynamic policy resolution
+
+Use `resolvePolicy` when the active policy depends on request context, such as
+an account tier or an application-managed cooldown:
+
+```typescript
+const rateEngine = new RateEngine({
+  redis,
+  buckets,
+  policies,
+  resolvePolicy: (policyId, context) => {
+    if (policyId === "api.read" && context.plan === "pro") {
+      return "api.read.pro";
+    }
+    return policyId;
+  },
+});
+```
+
+The returned ID must exist in `policies`. Resolution changes which policy is
+evaluated; it does not merge the original and resolved policy.
+
+RateEngine validates static configuration during construction. Invalid bucket
+capacities, durations or policies, incompatible refill settings, unknown
+static bucket references, and invalid timeout values fail before requests are
+handled. Dynamic bucket resolvers remain validated when they are used.
+
+---
+
 ### Instance methods
 
 #### 1. `enforce(policyId, context, options?)`
@@ -483,6 +512,11 @@ const decision = await rateEngine.consumeBucket("api:default", "user_123", {
 > [!WARNING]
 > Direct calls to `consumeBucket()` bypass policy-level pipeline checks. Direct bucket consumption defaults to fail open on Redis errors. Pass `failureMode: "closed"` for sensitive direct bucket checks.
 
+Identifiers are trimmed and must contain at most 512 UTF-8 bytes. Choose a
+stable identifier derived from a trusted source; validation limits key size but
+cannot make attacker-controlled, high-cardinality identifiers stable.
+Custom `rate` values must be positive safe integers.
+
 ---
 
 #### 3. `readBucket(bucketId, identifier)`
@@ -498,48 +532,92 @@ const snapshot = await rateEngine.readBucket("api:default", "user_123");
 
 ---
 
-#### 4. `resetBucket(bucketId, identifier)`
+#### 4. `readBuckets(entries)`
+
+Reads multiple bucket states concurrently without consuming tokens. Results
+remain in the same order as the input entries.
+
+```typescript
+const snapshots = await rateEngine.readBuckets([
+  { bucketId: "global:user", identifier: "user_123" },
+  { bucketId: "api:default", identifier: "user_123" },
+]);
+```
+
+- **Returns**
+  - `Promise<RateLimitSnapshot[]>`
+
+---
+
+#### 5. `resetBucket(bucketId, identifier)`
 
 Resets the consumed tokens for a bucket and identifier.
 
 ```typescript
-await rateEngine.resetBucket("auth:login", "user_123");
+const result = await rateEngine.resetBucket("auth:login", "user_123");
+if (!result.ok) {
+  // The reset did not reach Redis.
+}
 ```
 
 A successful reset also records Redis connectivity as healthy for the stateful health tracker.
 
 - **Returns**
-  - `Promise<void>`
+  - `Promise<ResetBucketResult>`
+
+`ResetBucketResult` is `{ ok: true }` on success or
+`{ ok: false, reason: "backend_error" }` when Redis rejects the reset.
 
 ---
 
-#### 5. `getHealth()`
+#### 6. `pingRedis()`
 
-Pings Redis and returns stateful health telemetry.
+Performs a live Redis connectivity check and measures round-trip latency.
 
 ```typescript
-const health = await rateEngine.getHealth();
+const ping = await rateEngine.pingRedis();
 ```
 
 - **Returns**
 
 ```typescript
 Promise<{
-  healthy: boolean;
-  usingFallback: boolean;
+  reachable: boolean;
+  latencyMs: number;
+}>;
+```
+
+Use this method for health endpoints. It performs a network call on every
+invocation and records the result in the instance metrics.
+
+---
+
+#### 7. `getInstanceMetrics()`
+
+Returns the in-memory telemetry for the current `RateEngine` instance.
+
+```typescript
+const metrics = rateEngine.getInstanceMetrics();
+```
+
+- **Returns**
+
+```typescript
+{
   consecutiveFailures: number;
   totalFailures: number;
   lastFailure: Date | null;
   lastSuccess: Date | null;
-}>;
+}
 ```
 
 > [!NOTE]
-> Health telemetry is stored in memory on the current `RateEngine` instance. In serverless, edge, or horizontally scaled deployments, counters reflect only the current runtime instance, not global Redis health.
+> These counters reset with the process. In serverless, edge, or horizontally
+> scaled deployments, they do not represent aggregate Redis health.
 
 ---
 
-#### 6. `resetHealth()`
+#### 8. `resetHealth()`
 
 Clears stateful health telemetry.
 
@@ -644,6 +722,10 @@ RateLimit-Remaining: 42
 RateLimit-Reset: 60
 ```
 
+`RateLimit-Reset` is the non-negative number of seconds until reset, matching
+the current IETF RateLimit field semantics. The underlying decision keeps
+`reset` as a Unix timestamp in milliseconds.
+
 ---
 
 ## Development
@@ -677,7 +759,7 @@ bun run test:smoke
 ## Related Packages
 
 - [`boundary-engine`](https://github.com/cpauldev/boundary-engine) for safe HTTP route boundaries.
-- [`redact-engine`](https://github.com/cpauldev/redact-engine) for sensitive data redaction.
+- [`redact-engine`](https://github.com/cpauldev/redact-engine) for sensitive data redaction and safe logging.
 - [`secret-engine`](https://github.com/cpauldev/secret-engine) for context-bound encryption and secret handling.
 - [`session-engine`](https://github.com/cpauldev/session-engine) for browser session and cache lifecycle management.
 

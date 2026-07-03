@@ -2,17 +2,21 @@ import { describe, expect, it } from "bun:test";
 
 import {
   type BucketConfig,
+  type BucketReadInput,
   type ConsumeBucketOptions,
   type EffectiveQuotaMeta,
   type EnforceOptions,
+  getRateLimitHeaders,
   RateEngine,
   type RateEngineContext,
+  type RateEngineInstanceMetrics,
   type RateEngineOptions,
   type RateEngineRedisClient,
   type RateLimitDecision,
   type RateLimitPolicy,
   type RateLimitStageDecision,
-  getRateLimitHeaders,
+  type RedisPingResult,
+  type ResetBucketResult,
   toOAuthSlowDownResponse,
   toRateLimitResponse,
 } from "../index";
@@ -62,6 +66,27 @@ describe("public exports", () => {
       waitUntil: (_promise: Promise<unknown>) => undefined,
     } satisfies EnforceOptions;
 
+    const readInput = {
+      bucketId: "bucket",
+      identifier: "user-1",
+    } satisfies BucketReadInput<BucketId>;
+
+    const ping = {
+      reachable: true,
+      latencyMs: 1,
+    } satisfies RedisPingResult;
+
+    const metrics = {
+      consecutiveFailures: 0,
+      totalFailures: 0,
+      lastFailure: null,
+      lastSuccess: null,
+    } satisfies RateEngineInstanceMetrics;
+
+    const resetResult = {
+      ok: true,
+    } satisfies ResetBucketResult;
+
     const stageDecision = {
       allowed: true,
       bucketId: "bucket",
@@ -91,6 +116,10 @@ describe("public exports", () => {
     expect(options.analytics).toBe(false);
     expect(consumeOptions.failureMode).toBe("closed");
     expect(enforceOptions.waitUntil).toBeFunction();
+    expect(readInput.bucketId).toBe("bucket");
+    expect(ping.reachable).toBe(true);
+    expect(metrics.totalFailures).toBe(0);
+    expect(resetResult.ok).toBe(true);
     expect(decision.effective.composite).toBe(false);
   });
 });

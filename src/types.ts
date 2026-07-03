@@ -1,3 +1,5 @@
+import type { Duration } from "@upstash/ratelimit";
+
 /**
  * Represents the cause of a rate limit evaluation failure or block.
  */
@@ -119,7 +121,7 @@ export type RateLimitAlgorithm =
 /**
  * Definition structure for a rate limiting bucket capacity and window.
  */
-export type BucketConfig<TDuration extends string = string> = {
+export type BucketConfig<TDuration extends string = Duration> = {
   /** Max requests permitted inside the rate limit window. */
   requests: number;
   /** Window size string (e.g. "10 s", "1 m", "24 h"). */
@@ -166,11 +168,36 @@ export type RateEngineContext = {
   [key: string]: unknown;
 };
 
+/** A bucket and identifier pair used by a multi-bucket read. */
+export type BucketReadInput<TBucketId extends string> = {
+  bucketId: TBucketId;
+  identifier: string;
+};
+
+/** Result of a live Redis connectivity check. */
+export type RedisPingResult = {
+  reachable: boolean;
+  latencyMs: number;
+};
+
+/** In-memory telemetry scoped to one RateEngine instance. */
+export type RateEngineInstanceMetrics = {
+  consecutiveFailures: number;
+  totalFailures: number;
+  lastFailure: Date | null;
+  lastSuccess: Date | null;
+};
+
+/** Result of resetting a bucket's consumed tokens. */
+export type ResetBucketResult =
+  | { ok: true }
+  | { ok: false; reason: "backend_error" };
+
 /**
  * Options passed to manual bucket consumption calls.
  */
 export type ConsumeBucketOptions<TPolicyId extends string> = {
-  /** Optional custom token cost to consume for this request. Defaults to 1. */
+  /** Positive integer token cost to consume for this request. Defaults to 1. */
   rate?: number;
   /** Metadata parameters passed to Upstash analytics uploads. */
   context?: {
@@ -192,7 +219,10 @@ export type ConsumeBucketOptions<TPolicyId extends string> = {
  * Options passed to policy enforcement calls.
  */
 export type EnforceOptions = {
-  /** Wait-until context method used to keep background analytics upload promises alive in serverless/edge environments. */
+  /**
+   * Wait-until context method used to keep background analytics upload promises
+   * alive in serverless/edge environments.
+   */
   waitUntil?: (promise: Promise<unknown>) => void;
 };
 
@@ -214,7 +244,7 @@ export type RateEngineOptions<
   logger?: RateEngineLogger;
   /** Redis execution timeout in milliseconds. Defaults to 1000ms. */
   redisTimeoutMs?: number;
-  /** Fake reset delay in ms applied to fallback snapshots if Redis goes offline. Defaults to 60000ms. */
+  /** Fallback reset delay in ms applied to degraded snapshots if Redis goes offline. Defaults to 60000ms. */
   fallbackResetMs?: number;
   /** Enables @upstash/ratelimit analytics uploads. Defaults to true. */
   analytics?: boolean;
@@ -227,7 +257,11 @@ export type RateEngineOptions<
   ) => Promise<TPolicyId> | TPolicyId;
   /** Shared cache Map to cache tokens locally and bypass Redis connection overhead. */
   ephemeralCache?: Map<string, number>;
-  /** Telemetry callback invoked when a rate limit is violated or if a fail-closed policy fails during degradation. */
+  /**
+   * Telemetry callback invoked when a rate limit is violated or if a fail-closed policy
+   * blocks due to degradation. If this callback throws, the error is caught and logged
+   * internally — it will not propagate out of enforce().
+   */
   onViolation?: (
     context: TContext,
     decision: RateLimitDecision<TPolicyId, TBucketId>,
