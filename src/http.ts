@@ -1,4 +1,4 @@
-import type { RateLimitDecision } from "./types";
+import type { RateLimitDecision } from "./types.js";
 
 /**
  * Calculates the retry-after duration in seconds from the reset timestamp.

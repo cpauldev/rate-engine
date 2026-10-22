@@ -1,10 +1,10 @@
-export { RateEngine } from "./rate-engine";
+export { RateEngine } from "./rate-engine.js";
 
 export {
   getRateLimitHeaders,
   toOAuthSlowDownResponse,
   toRateLimitResponse,
-} from "./http";
+} from "./http.js";
 
 export type {
   BucketConfig,
@@ -26,4 +26,4 @@ export type {
   RateLimitTier,
   RedisPingResult,
   ResetBucketResult,
-} from "./types";
+} from "./types.js";

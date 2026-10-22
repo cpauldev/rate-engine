@@ -329,6 +329,12 @@ It has been designed for use with:
 
 Provider-specific behavior should be verified in your deployment environment.
 
+`@upstash/ratelimit` is pinned to 2.0.8 while
+[upstream issue #162](https://github.com/upstash/ratelimit-js/issues/162) remains
+unfixed in a stable release. Newer versions send an Upstash-only Lua flag that
+fails on Dragonfly and other Redis-compatible servers. Website CI tests all
+three algorithms against a real Dragonfly service before deployment.
+
 > [!NOTE]
 > **Flipped environments:** The usual local-vs-production setup can be reversed. If you self-host staging/production with DragonflyDB, Valkey, or ElastiCache and use Upstash for local development tunnels, prefer an explicit variable such as `REDIS_PROVIDER=upstash|dragonfly|valkey` instead of relying only on `NODE_ENV`.
 

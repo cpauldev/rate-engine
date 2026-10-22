@@ -4,8 +4,8 @@ import {
   getRateLimitHeaders,
   toOAuthSlowDownResponse,
   toRateLimitResponse,
-} from "../http";
-import { createDecision } from "./test-utils";
+} from "../http.js";
+import { createDecision } from "./test-utils.js";
 
 describe("HTTP helpers", () => {
   describe("getRateLimitHeaders", () => {

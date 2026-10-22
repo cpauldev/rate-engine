@@ -17,7 +17,7 @@ import type {
   RateLimitStageDecision,
   RedisPingResult,
   ResetBucketResult,
-} from "./types";
+} from "./types.js";
 
 /**
  * High-performance, client-agnostic rate limiting engine for TypeScript.
@@ -215,11 +215,47 @@ export class RateEngine<
       );
     }
 
+    // Upstash's default reset scans inside Lua, which accesses undeclared keys
+    // on Dragonfly. Only these exact keys can contribute to the current quota.
+    const durationMatch = config.window
+      .trim()
+      .match(/^(\d+(?:\.\d+)?)\s?(ms|s|m|h|d)$/);
+    if (!durationMatch) {
+      throw new Error(`[RateEngine] Invalid window for bucket: ${bucketId}`);
+    }
+    const unitDurations: Record<string, number> = {
+      ms: 1,
+      s: 1000,
+      m: 60_000,
+      h: 3_600_000,
+      d: 86_400_000,
+    };
+    const durationMs =
+      Number(durationMatch[1]) * unitDurations[durationMatch[2]];
+    const resettableAlgorithm: typeof algorithmImpl = () => ({
+      ...algorithmImpl(),
+      async resetTokens(ctx, identifier) {
+        const window = Math.floor(Date.now() / durationMs);
+        const keys =
+          algorithm === "tokenBucket"
+            ? [identifier]
+            : algorithm === "fixedWindow"
+              ? [`${identifier}:${window}`]
+              : [`${identifier}:${window}`, `${identifier}:${window - 1}`];
+        await ctx.redis.eval(
+          "return redis.call('DEL', unpack(KEYS))",
+          keys,
+          [],
+        );
+        ctx.cache?.pop(identifier);
+      },
+    });
+
     const limiter = new Ratelimit({
       redis: this.redis as unknown as ConstructorParameters<
         typeof Ratelimit
       >[0]["redis"],
-      limiter: algorithmImpl,
+      limiter: resettableAlgorithm,
       prefix: this.getBucketPrefix(bucketId),
       analytics: this.analytics,
       timeout: this.redisTimeoutMs,

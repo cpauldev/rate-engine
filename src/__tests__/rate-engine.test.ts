@@ -5,9 +5,9 @@ import type {
   RateEngineOptions,
   RateEngineRedisClient,
   RateLimitPolicy,
-} from "../types";
+} from "../types.js";
 
-import { RateEngine } from "../rate-engine";
+import { RateEngine } from "../rate-engine.js";
 import {
   createFailingRedisMock,
   createLimitResult,
@@ -19,7 +19,7 @@ import {
   type TestBucketId,
   type TestContext,
   type TestPolicyId,
-} from "./test-utils";
+} from "./test-utils.js";
 
 describe("RateEngine", () => {
   describe("consumeBucket", () => {
@@ -192,6 +192,65 @@ describe("RateEngine", () => {
   });
 
   describe("real limiter construction", () => {
+    it.each(["slidingWindow", "fixedWindow", "tokenBucket"] as const)(
+      "resets only declared %s keys and clears the local denial cache after success",
+      async (algorithm) => {
+        const redis = createRedisMock();
+        const cache = new Map<string, number>();
+        const identifier = "user:*:[1]";
+        const prefix = "custom:bucket";
+        const cacheKey = `${prefix}:${identifier}`;
+        cache.set(cacheKey, Date.now() + 60_000);
+        const engine = new RateEngine({
+          redis,
+          buckets: { bucket: { requests: 5, window: "1 h", algorithm } },
+          policies: {},
+          analytics: false,
+          ephemeralCache: cache,
+          bucketPrefixOverrides: { bucket: prefix },
+        });
+        const before = Math.floor(Date.now() / 3_600_000);
+        expect(await engine.resetBucket("bucket", ` ${identifier} `)).toEqual({
+          ok: true,
+        });
+        const after = Math.floor(Date.now() / 3_600_000);
+        const [script, keys, args] = (redis.eval as ReturnType<typeof mock>)
+          .mock.calls[0]!;
+        expect(script).toBe("return redis.call('DEL', unpack(KEYS))");
+        expect(args).toEqual([]);
+        if (algorithm === "tokenBucket") {
+          expect(keys).toEqual([cacheKey]);
+        } else {
+          const window = Number(keys[0].slice(cacheKey.length + 1));
+          expect(window).toBeGreaterThanOrEqual(before);
+          expect(window).toBeLessThanOrEqual(after);
+          expect(keys).toEqual(
+            algorithm === "fixedWindow"
+              ? [`${cacheKey}:${window}`]
+              : [`${cacheKey}:${window}`, `${cacheKey}:${window - 1}`],
+          );
+        }
+        expect(cache.has(cacheKey)).toBe(false);
+      },
+    );
+
+    it("preserves the local denial cache when the declared-key reset fails", async () => {
+      const redis = createFailingRedisMock();
+      const cache = new Map([["ratelimit:bucket:user-1", Date.now() + 60_000]]);
+      const engine = new RateEngine({
+        redis,
+        buckets: { bucket: { requests: 5, window: "1 h" } },
+        policies: {},
+        analytics: false,
+        ephemeralCache: cache,
+      });
+      expect(await engine.resetBucket("bucket", "user-1")).toEqual({
+        ok: false,
+        reason: "backend_error",
+      });
+      expect(cache.has("ratelimit:bucket:user-1")).toBe(true);
+    });
+
     function createRealEngine(options: {
       buckets: Record<TestBucketId, BucketConfig>;
       redis?: RateEngineRedisClient;

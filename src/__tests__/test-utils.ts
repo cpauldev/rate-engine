@@ -10,9 +10,9 @@ import type {
   RateLimitFailureReason,
   RateLimitPolicy,
   RateLimitSnapshot,
-} from "../types";
+} from "../types.js";
 
-import { RateEngine } from "../rate-engine";
+import { RateEngine } from "../rate-engine.js";
 
 export type TestPolicyId = string;
 export type TestBucketId = "bucketA" | "bucketB" | "bucketC";

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [4.0.1] - 2026-10-22
+
+### Fixed
+
+- Reset only the exact Redis keys used by each algorithm, avoiding undeclared-key Lua access on Dragonfly and clearing the local denial cache only after a successful reset.
+- Pin `@upstash/ratelimit` to 2.0.8 to avoid Upstash-only Lua flags in newer releases that fail on other Redis servers.
+- Emit Node-compatible ESM imports and declarations.
+- Clean build output before compiling and check Node runtime exports before packing.
+
 ## [4.0.0] - 2026-07-03
 
 This release separates live Redis checks from instance telemetry, adds concurrent bucket reads, and hardens identifier and callback handling.

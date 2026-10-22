@@ -1,6 +1,6 @@
 {
   "name": "rate-engine",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "private": false,
   "description": "RateEngine is a client-agnostic, multi-stage rate limiting policy engine for TypeScript, powered by `@upstash/ratelimit`. It helps you define Redis-backed rate limit buckets, enforce ordered policy pipelines, choose fail-open or fail-closed behavior, and return standard HTTP rate-limit responses with minimal route-handler boilerplate.",
   "keywords": [
@@ -50,19 +50,21 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
-    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "prepack": "npm run build && npm run test:smoke",
     "test": "bun test src/__tests__",
-    "test:smoke": "bun -e \"const mod = await import('./dist/index.js'); for (const key of ['RateEngine','getRateLimitHeaders','toRateLimitResponse','toOAuthSlowDownResponse']) { if (typeof mod[key] !== 'function') throw new Error('Missing export: ' + key); }\"",
+    "test:smoke": "node --input-type=module -e \"const mod = await import('./dist/index.js'); for (const key of ['RateEngine','getRateLimitHeaders','toRateLimitResponse','toOAuthSlowDownResponse']) { if (typeof mod[key] !== 'function') throw new Error('Missing export: ' + key); }\"",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
   },
   "dependencies": {
-    "@upstash/ratelimit": "^2.0.8"
+    "@upstash/ratelimit": "2.0.8"
   },
   "devDependencies": {
-    "@types/node": "^25.9.4",
+    "@types/node": "^26.6.5",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "bun-types": "^1.3.14",
-    "typescript": "^6.0.3"
+    "typescript": "~6.0.3"
   },
   "peerDependencies": {
     "@upstash/redis": "^1.34.3"

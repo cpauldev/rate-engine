@@ -19,7 +19,7 @@ import {
   type ResetBucketResult,
   toOAuthSlowDownResponse,
   toRateLimitResponse,
-} from "../index";
+} from "../index.js";
 
 describe("public exports", () => {
   it("exposes runtime exports from the package entrypoint", () => {
